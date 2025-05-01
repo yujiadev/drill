@@ -49,6 +49,6 @@ func ReadThenParseConfig(cfg_path string) DrillConfig {
 		log.Fatalf("Failed to parse YAML: %v", err)
 	}
 
-	fmt.Printf("\nParsed config: %+v\n", cfg)
+	fmt.Println("Parsed config done")
 	return cfg
 }
