@@ -40,15 +40,12 @@ func ReadThenParseConfig(cfg_path string) DrillConfig {
 		log.Fatalf("ReadThenParseConfig error (read file): %v. At %s", err, pwd)
 	}
 
-	fmt.Println("config file path:", cfg_path)
-	fmt.Printf("Raw YAML content:\n%s\n", data)
-
 	var cfg DrillConfig
 	err = yaml.Unmarshal(data, &cfg)
 	if err != nil {
 		log.Fatalf("Failed to parse YAML: %v", err)
 	}
 
-	fmt.Println("Parsed config done")
+	fmt.Println("ReadThenParseConfig done.")
 	return cfg
 }
