@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"drill/pkg/config"
+	"drill/pkg/x_crypto"
 )
 
 func main() {
@@ -13,8 +14,13 @@ func main() {
 	}
 
 	config_file_path := os.Args[1]
+	config := config.ReadThenParseConfig(config_file_path)
 
-	config.ReadThenParseConfig(config_file_path)
+
+	fmt.Println(config)	
+
+	x_crypto.Encrypt()
+
 
 	fmt.Println("Running as drill developing client and server")
 }
