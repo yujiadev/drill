@@ -16,11 +16,18 @@ func main() {
 	config_file_path := os.Args[1]
 	config := config.ReadThenParseConfig(config_file_path)
 
+	cipher := x_crypto.New(config.Client.Pkey)
 
-	fmt.Println(config)	
+	msg := []byte("hello world!")
+	ciphertext := cipher.Encrypt(&msg)
+	plaintext, err := cipher.Decrypt(&ciphertext)
 
-	x_crypto.Encrypt()
+	if err != nil {
 
+	}
+
+	fmt.Println(msg)
+	fmt.Println(plaintext)
 
 	fmt.Println("Running as drill developing client and server")
 }
