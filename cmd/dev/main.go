@@ -5,29 +5,21 @@ import (
 	"fmt"
 
 	"drill/pkg/config"
-	"drill/pkg/x_crypto"
+	//"drill/pkg/x_crypto"
+	"drill/pkg/proxy"
 )
 
 func main() {
+	fmt.Println("Running as drill developing client and server")
+
 	if len(os.Args) != 2 {
 		panic("Error: Missing config file path!\ndrill <path-to-config>\n")
 	}
 
 	config_file_path := os.Args[1]
-	config := config.ReadThenParseConfig(config_file_path)
+	cfg := config.ReadThenParseConfig(config_file_path)
 
-	cipher := x_crypto.New(config.Client.Pkey)
+	https_proxy := proxy.New(cfg.Client.Host, cfg.Client.Port)
 
-	msg := []byte("hello world!")
-	ciphertext := cipher.Encrypt(&msg)
-	plaintext, err := cipher.Decrypt(&ciphertext)
-
-	if err != nil {
-
-	}
-
-	fmt.Println(msg)
-	fmt.Println(plaintext)
-
-	fmt.Println("Running as drill developing client and server")
+	https_proxy.Run()
 }
