@@ -5,6 +5,7 @@ import (
 	"time"
 	"sync"
 
+	//"drill/pkg/obfuscate"
 	"drill/pkg/proxy"
 )
 
@@ -51,8 +52,6 @@ func RunTransportClient(addr string, wg *sync.WaitGroup) {
 		fmt.Println("Done")
 		break
 	}
-
-	fmt.Println("Wait Done")
 
 	wg.Done()
 }
