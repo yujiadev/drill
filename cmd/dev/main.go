@@ -5,8 +5,7 @@ import (
 	"fmt"
 
 	"drill/pkg/config"
-	//"drill/pkg/x_crypto"
-	"drill/pkg/proxy"
+	"drill/pkg/transport"
 )
 
 func main() {
@@ -19,7 +18,12 @@ func main() {
 	config_file_path := os.Args[1]
 	cfg := config.ReadThenParseConfig(config_file_path)
 
-	https_proxy := proxy.New(cfg.Client.Host, cfg.Client.Port)
+	client := transport.NewTransportClient(
+		cfg.Client.Host,
+		cfg.Client.Port,
+		cfg.Server.Host,
+		cfg.Server.Port,	
+	)
 
-	https_proxy.Run()
+	client.Run()
 }

@@ -12,8 +12,7 @@ type HttpsProxy struct {
 	Address string
 }
 
-func New(host string, port uint16) HttpsProxy {
-	addr := fmt.Sprintf("%s:%v", host, port)	
+func NewHttpsProxy(addr string) HttpsProxy {
 	return HttpsProxy { addr }
 }
 
