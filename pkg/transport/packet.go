@@ -16,9 +16,11 @@
 package transport
 
 import (
-	"crypto/rand"
+	"time"
+	"crypto/rand"	
 	"encoding/binary"
 	"errors"
+	aead "golang.org/x/crypto/chacha20poly1305"
 )
 
 const (
@@ -32,11 +34,44 @@ const (
 	FINACK
 )
 
-func GenToken() {}
+func GenToken(raddr string) []byte {
+	// Generate the token
+	now := time.Now().Unix()
+	addr := []byte(raddr)
+	size := int32(len(addr))
+
+	buf, err := binary.Append(nil, binary.BigEndian, now)
+	if err != nil {
+		panic("GenToken can't write 'now' to buffer")
+	}
+
+	buf, err = binary.Append(buf, binary.BigEndian, size)
+	if err != nil {
+		panic("GenToken can't write 'size' to buffer")
+	}
+
+	buf = append(buf, addr...)
+
+	// Encrypt the token
+	key := make([]byte, aead.KeySize)
+	nonce := make(
+		[]byte,
+		aead.NonceSize, 
+		aead.NonceSize + len(buf) + aead.Overhead,
+	)
+	rand.Read(key)
+	rand.Read(nonce)
+	cphr, err := aead.New(key)	
+
+	if err != nil {
+		panic("GenToken can't init chacha20poly1305 cipher")
+	}
+
+	token := cphr.Seal(nonce, nonce, buf, nil)
+	return token
+}
 
 func GenChallenge() {}
-
-func GenAnswer() {}
 
 type Init struct {
 	Padding []byte
@@ -71,10 +106,22 @@ func InitFromBeBytes(data *[]byte) (Init, error) {
 	return init, nil
 }
 
-
 type Retry struct {
 	Token []byte
 }
+
+func NewRetry() {
+
+}
+
+func (pkt *Retry) ToBeBytes() {
+
+}
+
+func RetryFromBeBytes() {
+
+}
+
 
 type Init2 struct {
 	Id uint64

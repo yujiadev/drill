@@ -50,6 +50,7 @@ func handleConnectRequest(conn net.Conn) {
 	}
 
 	fmt.Printf("%s\n", request.Host)
+	fmt.Printf("%s\n", conn.RemoteAddr())
 
 	conn.Close()
 }
