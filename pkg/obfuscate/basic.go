@@ -1,7 +1,6 @@
 package obfuscate
 
 import (
-	//"fmt"
 	"errors"
 	"encoding/binary"
 )

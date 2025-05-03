@@ -15,7 +15,7 @@ type XCipher struct {
 }
 
 // Th key need to be base64 string
-func New(key_str string) XCipher {
+func NewXCipher(key_str string) XCipher {
 	key, err := base64.StdEncoding.DecodeString(key_str)
 	if err != nil {
 		log.Fatalf("XCipher::new() decode base64 string error.", err)
