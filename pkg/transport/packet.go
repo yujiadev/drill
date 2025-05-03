@@ -21,6 +21,8 @@ import (
 	"encoding/binary"
 	"errors"
 	aead "golang.org/x/crypto/chacha20poly1305"
+
+	"drill/pkg/xcrypto"
 )
 
 const (
@@ -34,6 +36,7 @@ const (
 	FINACK
 )
 
+// Generate token for Retry
 func GenToken(raddr string) []byte {
 	// Generate the token
 	now := time.Now().Unix()
@@ -71,7 +74,8 @@ func GenToken(raddr string) []byte {
 	return token
 }
 
-func GenChallenge() {}
+// Generate challenge for verifying remote identity
+func GenChallenge(id uint64, raddr string, cphr *xcrypto.XCipher) {}
 
 type Init struct {
 	Padding []byte

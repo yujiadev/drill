@@ -7,7 +7,7 @@ import (
     "crypto/rand"
     "testing"
 
-    "drill/pkg/x_crypto"
+    "drill/pkg/xcrypto"
 )
 
 func TestXCipher(t *testing.T) {
@@ -15,7 +15,7 @@ func TestXCipher(t *testing.T) {
     rand.Read(b_pkey)
 
     pkey := base64.StdEncoding.EncodeToString(b_pkey)
-    xcipher := x_crypto.NewXCipher(pkey)
+    xcipher := xcrypto.NewXCipher(pkey)
 
     msg := []byte("Hello World! This is a test message for XCipher")
 

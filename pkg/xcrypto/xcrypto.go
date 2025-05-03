@@ -1,4 +1,4 @@
-package x_crypto
+package xcrypto
 
 import (
 	"log"
