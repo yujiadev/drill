@@ -110,18 +110,36 @@ type Retry struct {
 	Token []byte
 }
 
-func NewRetry() {
-
+func NewRetry(addr string) Retry {
+	token := GenToken(addr)
+	return Retry { token }
 }
 
-func (pkt *Retry) ToBeBytes() {
+func (pkt *Retry) ToBeBytes() []byte {
+	size := int32(len(pkt.Token))
+	buf, err := binary.Append(nil, binary.BigEndian, size)
 
+	if err != nil {
+		panic("Retry::ToBeBytes can't write 'size' to buffer")	
+	}
+
+	return append(buf, pkt.Token...)	
 }
 
-func RetryFromBeBytes() {
+func RetryFromBeBytes(data *[]byte) (Retry, error) {
+	if len(*data) < 4 {
+		err := errors.New("RetryFromBeBytes not enough bytes to parse size out")
+		return Retry {}, err
+	}
 
+    size := int(binary.BigEndian.Uint32((*data)[:4]))
+    if len((*data)[4:]) < size {
+ 		err := errors.New("RetryFromBeBytes not enough bytes to parse token out")
+		return Retry {}, err
+    }
+
+    return Retry { (*data)[4:(4+size)] }, nil
 }
-
 
 type Init2 struct {
 	Id uint64
@@ -133,6 +151,7 @@ type InitAck struct {
 	Cid uint64
 	Time int64
 	Answer []byte
+	Key []byte
 }
 
 type InitDone struct {

@@ -25,3 +25,19 @@ func TestInitPacket(t *testing.T) {
         log.Fatalf("want: %v\n, got: %v\n", init_recv.Padding, init_padding)
     }
 }
+
+func TestRetryPacket(t *testing.T) {
+    retry := transport.NewRetry("127.0.0.1:8787") 
+    token := retry.Token
+
+    retry_send := retry.ToBeBytes() 
+    retry_recv, err := transport.RetryFromBeBytes(&retry_send)
+
+    if err != nil {
+        log.Fatalf("Parse Retry error. %s", err)
+    }
+
+    if !slices.Equal(retry_recv.Token, token) {
+        log.Fatalf("want: %v\n, got: %v\n", token, retry_recv.Token)
+    }
+}
