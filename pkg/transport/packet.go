@@ -1,3 +1,5 @@
+package transport
+
 /*
 	Packet Flow:
 	Client                    Server
@@ -13,20 +15,19 @@
 	  | <------- FINACK -------- |
 */
 
-package transport
-
 import (
+	"log"
+	"errors"
 	"time"
 	"crypto/rand"	
 	"encoding/binary"
-	"errors"
 	aead "golang.org/x/crypto/chacha20poly1305"
 
 	"drill/pkg/xcrypto"
 )
 
 const (
-	INIT uint64 = iota
+	INIT byte = iota
 	RETRY	
 	INIT2
 	INITACK
@@ -36,24 +37,20 @@ const (
 	FINACK
 )
 
-// Generate token for Retry
-func GenToken(raddr string) []byte {
+func NewToken(addr_str string) []byte {
 	// Generate the token
 	now := time.Now().Unix()
-	addr := []byte(raddr)
-	size := uint32(len(addr))
+	addr := []byte(addr_str) 
+	rand_bytes := make([]byte, 16)
+	rand.Read(rand_bytes)
 
 	buf, err := binary.Append(nil, binary.BigEndian, now)
 	if err != nil {
-		panic("GenToken can't write 'now' to buffer")
-	}
-
-	buf, err = binary.Append(buf, binary.BigEndian, size)
-	if err != nil {
-		panic("GenToken can't write 'size' to buffer")
+		log.Fatalf("can't append 'now' to buf. %s", err)
 	}
 
 	buf = append(buf, addr...)
+	buf = append(buf, rand_bytes...)
 
 	// Encrypt the token
 	key := make([]byte, aead.KeySize)
@@ -67,187 +64,243 @@ func GenToken(raddr string) []byte {
 	cphr, err := aead.New(key)	
 
 	if err != nil {
-		panic("GenToken can't init chacha20poly1305 cipher")
+		log.Fatalf("can't init chacha20poly1305 cipher. %s", err)
 	}
 
 	token := cphr.Seal(nonce, nonce, buf, nil)
 	return token
 }
 
-// Generate challenge for verifying remote identity
-func GenChallenge(id uint64, raddr string, cphr *xcrypto.XCipher) []byte {	
+func NewChallange(id uint64) []byte {
 	now := time.Now().Unix()
-	addr := []byte(raddr)
-	size := uint32(len(addr))
-	msg := make([]byte, 64)
+	msg := make([]byte, 64)	
 	rand.Read(msg)
 
+	// ID
 	buf, err := binary.Append(nil, binary.BigEndian, id)
 	if err != nil {
-		panic("GenChallenge can't write 'id' to buffer")
+		log.Fatalf("can't write 'id' to buf. %s", err)
 	}
 
-	buf, err = binary.Append(buf, binary.BigEndian, now)
-	if err != nil {
-		panic("GenChallenge can't write 'now' to buffer")
-	}
-
-	buf, err = binary.Append(buf, binary.BigEndian, size)
-	if err != nil {
-		panic("GenChallenge can't write 'size' to buffer")
-	}
-
-	buf = append(buf, addr...)
+	// Message
 	buf = append(buf, msg...)
 
-	return cphr.Encrypt(&buf)
+	// Time
+	buf, err = binary.Append(buf, binary.BigEndian, now)
+	if err != nil {
+		log.Fatalf("can't write 'now' to buf. %s", err)
+	}
+
+	return buf
 }
 
-// Return (timestamp, host address, id, message, error)
-func SolveChallege(
+func GetAnswer(data *[]byte) (uint64, []byte, int64, error) {
+	var tmsp int64
+	var id uint64
+	var msg []byte
+
+	// Get id
+	if len(*data) < 8 {
+		err := errors.New("can't parse 'id' w/o 8 bytes")
+		return id, msg, tmsp, err
+	}
+	id = binary.BigEndian.Uint64((*data)[:8])
+
+	// Get messsage
+	if len((*data)[8:]) < 64 {
+		err := errors.New("can't parse 'msg' w/o 64 bytes")
+		return id, msg, tmsp, err
+	}
+	msg = (*data)[8:72]
+
+	// Get id
+	if len((*data)[72:]) < 8 {
+		err := errors.New("can't parse 'tmsp' w/o 8 bytes")
+		return id, msg, tmsp, err
+	}
+	tmsp = int64(binary.BigEndian.Uint64((*data)[72:80]))
+
+	return id, msg, tmsp, nil
+}
+
+type NegotiatePacket struct {
+	CId uint64
+	Id uint64
+	Method byte
+	Token []byte			
+	Challenge []byte   
+	Answer []byte      
+	Key []byte         
+	Padding []byte     
+
+	// | CID | ID | TOKEN_L | TOKEN | ENC_L | ENC (CHALL, ANS, KEY, RND) | PAD |
+	Raw []byte     
+}
+
+func NewNegotiatePacket(
+	cid, id uint64, 
+	method byte, 
+	token, challenge, answer, key, padding []byte,
+	cphr *xcrypto.XCipher,
+) NegotiatePacket {
+	// Confirm the implemenation of binary.Append, below use case won't cause
+	// error to be return, err can be safely igonred
+	// Details: https://cs.opensource.google/go/go/+/refs/tags/go1.24.2:src/encoding/binary/binary.go;l=470
+	raw, _ := binary.Append(nil, binary.BigEndian, cid)
+	raw, _ = binary.Append(raw, binary.BigEndian, id)
+	raw, _ = binary.Append(raw, binary.BigEndian, method)
+
+	token_len     := uint32(len(token))	
+	challenge_len := uint32(len(challenge))
+	answer_len    := uint32(len(answer))
+	key_len       := uint32(len(key))
+	padding_len   := uint32(len(padding))
+
+	plaintext, _ := binary.Append(nil, binary.BigEndian, challenge_len)
+	plaintext, _  = binary.Append(plaintext, binary.BigEndian, answer_len)
+	plaintext, _  = binary.Append(plaintext, binary.BigEndian, key_len)
+	plaintext = append(plaintext, challenge...)
+	plaintext = append(plaintext, answer...)
+	plaintext = append(plaintext, key...)
+
+	bytes := make([]byte, 32)
+	rand.Read(bytes)	
+	plaintext = append(plaintext, bytes...)
+
+	ciphertext := cphr.Encrypt(&plaintext)
+	ciphertext_len := uint32(len(ciphertext))
+
+	raw, _ = binary.Append(raw, binary.BigEndian, token_len)
+	if token_len != 0 {
+		raw = append(raw, token...)
+	}
+
+	raw, _ = binary.Append(raw, binary.BigEndian, ciphertext_len)
+	raw = append(raw, ciphertext...)
+
+	raw, _ = binary.Append(raw, binary.BigEndian, padding_len)
+	if padding_len != 0 {
+		raw = append(raw, padding...)
+	}
+
+	return NegotiatePacket {
+		cid,
+		id,
+		method,
+		token,
+		challenge,
+		answer,
+		key,
+		padding,
+		raw,	
+	}
+}
+
+func NegotiatePacketFromBeBytes(
 	data *[]byte, 
 	cphr *xcrypto.XCipher,
-) (int64, string, uint64, []byte, error) {
-	var tmsp int64
-	var host string
-	var id uint64
-	msg := make([]byte, 0)
-	chall, err := cphr.Decrypt(data)
+) (NegotiatePacket, error) {
+	var cid, id uint64
+	var method byte
+	var token, chall, ans, key, padding, raw []byte
 
+	// CId + Id + Method + Token size 
+	if len(*data) < (8 + 8 + 1 + 4) {
+		err := errors.New("can't parse NegotiatePacket w/o enough bytes")
+		return NegotiatePacket{}, err
+	}
+
+	// Get CId, Id, Method
+	cid = binary.BigEndian.Uint64((*data)[0:8])
+	id  = binary.BigEndian.Uint64((*data)[8:16])
+	method = (*data)[16]
+
+	// Get Token
+	token_len := int(binary.BigEndian.Uint32((*data)[17:21]))
+	if len((*data)[21:]) < token_len {
+		err := errors.New("can't parse NegotiatePacket 'token_size' w/o enough bytes")
+		return NegotiatePacket{}, err
+	}
+	token = (*data)[21:21+token_len]
+
+	// Challange, Answer, Key are all in single encrypted message
+	// Decrypt the encrypted segment first, then parse fields out
+	start, end := 21+token_len, 21+token_len+4
+	if len((*data)[start:]) < 4 {
+		err := errors.New("can't parse NegotiatePacket 'cphrtxt_size' w/o enough bytes")
+		return NegotiatePacket{}, err
+	}
+	cphrtxt_len := int(binary.BigEndian.Uint32((*data)[start:end]))
+
+	start = end
+	end += cphrtxt_len
+	if len((*data)[start:]) < cphrtxt_len {
+		err := errors.New("can't parse NegotiatePacket 'cphrtxt' w/o enough bytes")
+		return NegotiatePacket{}, err
+	}
+
+	cphrtxt := (*data)[start:end]
+	plntxt, err := cphr.Decrypt(&cphrtxt)
 	if err != nil {
-		return tmsp, host, id, msg, err
+		return NegotiatePacket{}, err	
 	}
 
-	// Parse id
-	if len(chall) < 8 {
-		panic("SolveChallege not enough bytes to parse 'id'")
+	// Check if there enough bytes to parse the field size out
+	if len(plntxt) < 12 {
+		err := errors.New("can't parse 'chall', 'ans', 'key' out, not enough bytes")
+		return NegotiatePacket{}, err
 	}
-	id = binary.BigEndian.Uint64(chall[0:8])
 
-	// Parse timestamp
-	if len(chall[8:]) < 8 {
-		panic("SolveChallege not enough bytes to parse 'now'")
+	// Parse the size of chall, ans, key out
+	chall_len := int(binary.BigEndian.Uint32(plntxt[0:4]))
+	ans_len   := int(binary.BigEndian.Uint32(plntxt[4:8]))
+	key_len   := int(binary.BigEndian.Uint32(plntxt[8:12]))
+
+	// Check if there enough bytes to parse the values of chall, ans, key out
+	// The last 32 bytes are random bytes
+	if (len(plntxt[12:])-32) < chall_len+ans_len+key_len {
+		err := errors.New("can't parse values of 'chall', 'ans', 'key' out, not enough bytes")
+		return NegotiatePacket{}, err
 	}
-	tmsp = int64(binary.BigEndian.Uint64(chall[8:16]))
 
-	// Parse address size
-	if len(chall[16:]) < 4 {
-		panic("SolveChallege not enough bytes to parse 'size'")
+	if chall_len != 0 {
+		chall = plntxt[12:12+chall_len]
 	}
-	addr_size := int(binary.BigEndian.Uint32(chall[16:20]))
 
-	// Parse address
-	if len(chall[20:]) < addr_size {
-		panic("SolveChallege not enough bytes to parse 'addr'")
+	if ans_len != 0 {
+		ans = plntxt[12+chall_len:12+chall_len+ans_len]	
 	}
-	host = string(chall[20:20+addr_size])
 
-	// Parse message
-	if len(chall[20+addr_size:]) < 64 {
-		panic("SolveChallege not enough bytes to parse 'msg'")
+	if key_len != 0 {
+		key = plntxt[12+chall_len+ans_len:12+chall_len+ans_len+key_len]	
 	}
-	msg = chall[20+addr_size:20+addr_size+64]
 
-	return tmsp, host, id, msg, nil
+	raw = *data
+
+	return NegotiatePacket {
+		cid,
+		id,
+		method,
+		token,
+		chall,
+		ans,
+		key,
+		padding,
+		raw,
+	}, nil
+
 }
 
-//
-// Init
-//
-type Init struct {
-	Padding []byte
-}
-
-func NewInit() Init {
+/*
+func NewInit(id uint64, cphr *xcrypto.XCipher) NegotiatePacket {	
+	na := make([]byte, 0)
 	padding := make([]byte, 1200)
 	rand.Read(padding)
 
-	return Init { padding }
+	return NewNegotiatePacket(0, id, INIT, na, na, na ,na, padding, cphr)
 }
 
-func (pkt *Init) ToBeBytes() []byte {
-	buf := make([]byte, 8)
-	binary.BigEndian.PutUint64(buf, INIT)
-	return append(buf, pkt.Padding...)
+func NewRetry()  {
+
 }
-
-func InitFromBeBytes(data *[]byte) (Init, error) {
-	if len(*data) < (8 + 1200) {
-		return Init{}, errors.New("Init::FromBeBytes not enough bytes to parse")
-	}
-
-	method := binary.BigEndian.Uint64((*data)[:8])
-	if method != INIT {
-		return Init{}, errors.New("Init::FromBeBytes not INIT method")
-	}
-
-	padding := (*data)[8:1208]
-	init := Init { padding }
-
-	return init, nil
-}
-
-//
-// Retry
-//
-type Retry struct {
-	Token []byte
-}
-
-func NewRetry(addr string) Retry {
-	token := GenToken(addr)
-	return Retry { token }
-}
-
-func (pkt *Retry) ToBeBytes() []byte {
-	size := uint32(len(pkt.Token))
-	buf, err := binary.Append(nil, binary.BigEndian, size)
-
-	if err != nil {
-		panic("Retry::ToBeBytes can't write 'size' to buffer")	
-	}
-
-	return append(buf, pkt.Token...)	
-}
-
-func RetryFromBeBytes(data *[]byte) (Retry, error) {
-	if len(*data) < 4 {
-		err := errors.New("RetryFromBeBytes not enough bytes to parse size out")
-		return Retry {}, err
-	}
-
-    size := int(binary.BigEndian.Uint32((*data)[:4]))
-    if len((*data)[4:]) < size {
- 		err := errors.New("RetryFromBeBytes not enough bytes to parse token out")
-		return Retry {}, err
-    }
-
-    return Retry { (*data)[4:(4+size)] }, nil
-}
-
-//
-// Init2
-//
-type Init2 struct {
-	Id uint64
-	Token []byte
-	Challenge []byte
-}
-
-//
-// InitAck
-//
-type InitAck struct {
-	Cid uint64
-	Time int64
-	Answer []byte
-	Key []byte
-}
-
-//
-// InitDone
-//
-type InitDone struct {
-	Cid uint64
-	Time int64
-}
+*/

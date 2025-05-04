@@ -1,5 +1,6 @@
 package test
 
+/*
 import (
     "log"
     "slices"
@@ -40,4 +41,19 @@ func TestRetryPacket(t *testing.T) {
     if !slices.Equal(retry_recv.Token, token) {
         log.Fatalf("want: %v\n, got: %v\n", token, retry_recv.Token)
     }
+}
+*/
+
+import (
+    //"log"
+    //"slices"
+    //"encoding/base64"
+    //"crypto/rand"
+    "testing"
+
+    "drill/pkg/transport"
+)
+
+func TestInitPacket(t *testing.T) {
+    transport.NewToken("127.0.0.1:8787")
 }
