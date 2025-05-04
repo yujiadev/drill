@@ -288,19 +288,45 @@ func NegotiatePacketFromBeBytes(
 		padding,
 		raw,
 	}, nil
-
 }
 
-/*
-func NewInit(id uint64, cphr *xcrypto.XCipher) NegotiatePacket {	
+func NewInit(cphr *xcrypto.XCipher) NegotiatePacket {	
 	na := make([]byte, 0)
 	padding := make([]byte, 1200)
 	rand.Read(padding)
 
-	return NewNegotiatePacket(0, id, INIT, na, na, na ,na, padding, cphr)
+	return NewNegotiatePacket(0, 0, INIT, na, na, na ,na, padding, cphr)
 }
 
-func NewRetry()  {
-
+func NewRetry(addr string, cphr *xcrypto.XCipher) NegotiatePacket {
+	na := make([]byte, 0)
+	token := NewToken(addr)
+	return NewNegotiatePacket(0, 0, RETRY, token, na, na ,na, na, cphr)
 }
-*/
+
+func NewInit2(
+	id uint64, 
+	token, chall []byte, 
+	cphr *xcrypto.XCipher,
+) NegotiatePacket {
+	na := make([]byte, 0)
+	return NewNegotiatePacket(0, id, INIT2, token, chall, na, na, na, cphr)
+}
+
+func NewInitAck(
+	cid, id uint64,
+	chall, ans, key []byte,
+	cphr *xcrypto.XCipher,
+) NegotiatePacket {
+	na := make([]byte, 0)	
+	return NewNegotiatePacket(cid, id, INITACK, na, chall, ans, key, na, cphr)
+}
+
+func NewInitDone(
+	cid, id uint64,
+	ans []byte,
+	cphr *xcrypto.XCipher,
+) NegotiatePacket {
+	na := make([]byte, 0)	
+	return NewNegotiatePacket(cid, id, INITDONE, na, na, ans, na, na, cphr)
+}
