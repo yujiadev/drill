@@ -275,6 +275,13 @@ func NegotiatePacketFromBeBytes(
 		key = plntxt[12+chall_len+ans_len:12+chall_len+ans_len+key_len]	
 	}
 
+	padding_start := 8 + 8 + 1 + (4+token_len) + (4+cphrtxt_len) 
+	if len((*data)[padding_start:]) < 1200 {
+		err := errors.New("can't parse 'padding', not enough bytes (1200 bytes)")
+		return NegotiatePacket{}, err
+	}
+	padding = (*data)[padding_start+4:padding_start+4+1200]
+
 	raw = *data
 
 	return NegotiatePacket {
