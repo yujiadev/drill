@@ -1,8 +1,10 @@
 package test
 
 import (
+    "fmt"
     "log"
     "slices"
+    "errors"
     "testing"
 
     "drill/pkg/xcrypto"
@@ -21,37 +23,91 @@ func TestGetAnswer(t *testing.T) {
 
 func TestInitPacket(t *testing.T) {
     cphr := xcrypto.NewXCipher(PKEY)
-    init := transport.NewInit(&cphr)
-    bytes := init.Raw
-    output_init, err := transport.NegotiatePacketFromBeBytes(&bytes, &cphr)
+    want := transport.NewInit(&cphr)
+    bytes := want.Raw
+    got, err := transport.NegotiatePacketFromBeBytes(&bytes, &cphr)
 
     if err != nil {
         log.Fatalf("NegotiatePacketFromBeBytes err (INIT). %s", err)
     }
 
-    if !slices.Equal(init.Padding, output_init.Padding) {
-        log.Fatalf(
-            "Unmatched NegotiatePacket.Padding:\nwant: %v\ngot: %v\n",
-            init.Padding,
-            output_init.Padding,
-        )
-    }
+    err = ComparePacketValue(
+        got,
+        0,
+        0,
+        transport.INIT,
+        want.Token,
+        want.Challenge,
+        want.Answer,
+        want.Key,
+        want.Padding,
+        want.Raw,
+    )
 
-
-    if !slices.Equal(init.Raw, output_init.Raw) {
-        log.Fatalf(
-            "Unmatched NegotiatePacket.Raw:\nwant: %v\ngot: %v\n",
-            init.Raw,
-            output_init.Raw,
-        )
+    if err != nil {
+        log.Fatalf("NegotiatePacket (Init): %s", err)
     }
 }
 
 func TestRetryPacket(t *testing.T) {
+    cphr := xcrypto.NewXCipher(PKEY)
+    want := transport.NewRetry("127.0.0.1:8787", &cphr)
+    bytes := want.Raw
+    got, err := transport.NegotiatePacketFromBeBytes(&bytes, &cphr)
+
+    if err != nil {
+        log.Fatalf("NegotiatePacketFromBeBytes err (RETRY). %s", err)
+    }
+
+    err = ComparePacketValue(
+        got,
+        0,
+        0,
+        transport.RETRY,
+        want.Token,
+        want.Challenge,
+        want.Answer,
+        want.Key,
+        want.Padding,
+        want.Raw,
+    )
+
+    if err != nil {
+        log.Fatalf("NegotiatePacket (RETRY): %s", err)
+    }
 }
 
 func TestInit2Packet(t *testing.T) {
+    cphr := xcrypto.NewXCipher(PKEY)
 
+    id := uint64(987654321)
+    token := transport.NewToken("127.0.0.1:8787")
+    challenge := transport.NewChallange(1234567890)
+
+    want := transport.NewInit2(id, token, challenge, &cphr)
+    bytes := want.Raw
+    got, err := transport.NegotiatePacketFromBeBytes(&bytes, &cphr)
+
+    if err != nil {
+        log.Fatalf("NegotiatePacketFromBeBytes err (INIT2). %s", err)
+    }
+
+    err = ComparePacketValue(
+        got,
+        13579, 
+        987654321,
+        transport.INIT2,
+        token,
+        challenge,        
+        []byte{},
+        []byte{},
+        want.Padding,
+        want.Raw,
+    )
+
+    if err != nil {
+        log.Fatalf("NegotiatePacket (RETRY): %s", err)
+    }
 }
 
 func TestInitAckPacket(t *testing.T) {
@@ -60,4 +116,198 @@ func TestInitAckPacket(t *testing.T) {
 
 func TestInitDonePacket(t *testing.T) {
 
+}
+
+
+func ComparePacketValue(
+    got transport.NegotiatePacket, 
+    cid, id uint64, 
+    method byte, 
+    token, challenge, answer, key, padding, raw []byte,
+) error {
+    // Compare CId
+    if cid != got.CId {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.CId:\nwant: %v\ngot: %v\n",
+            cid,
+            got.CId,
+        )
+        return errors.New(msg)
+    }
+
+    // Compare Id
+    if id != got.Id {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.Id:\nwant: %v\ngot: %v\n",
+            id,
+            got.Id,
+        )
+        return errors.New(msg)
+    }
+
+    // Compare Method
+    if method != got.Method {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.Method:\nwant: %v\ngot: %v\n",
+            method,
+            got.Method,
+        )
+        return errors.New(msg)
+    }
+
+    // Compare Token
+    if !slices.Equal(token, got.Token) {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.Token:\nwant: %v\ngot: %v\n",
+            token,
+            got.Token,
+        )
+        return errors.New(msg)
+    }
+
+    // Compare Challenge
+    if !slices.Equal(challenge, got.Challenge) {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.Challenge:\nwant: %v\ngot: %v\n",
+            challenge,
+            got.Challenge,
+        )
+        return errors.New(msg)
+    }
+
+    // Compare Answer
+    if !slices.Equal(answer, got.Answer) {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.Answer:\nwant: %v\ngot: %v\n",
+            answer,
+            got.Answer,
+        )
+        return errors.New(msg)
+    }
+
+    // Compare Key
+    if !slices.Equal(key, got.Key) {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.Key:\nwant: %v\ngot: %v\n",
+            key,
+            got.Key,
+        )
+        return errors.New(msg)
+    }
+
+    // Compare Padding
+    if !slices.Equal(padding, got.Padding) {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.Padding:\nwant: %v\ngot: %v\n",
+            padding,
+            got.Padding,
+        )
+        return errors.New(msg)
+    }
+
+    // Compare Raw
+    if !slices.Equal(raw, got.Raw) {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.Raw:\nwant: %v\ngot: %v\n",
+            raw,
+            got.Raw,
+        )
+        return errors.New(msg)
+    }
+
+    return nil
+}
+
+func ComparePackets(got, want transport.NegotiatePacket) error {
+    // Compare CId
+    if want.CId != got.CId {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.CId:\nwant: %v\ngot: %v\n",
+            want.CId,
+            got.CId,
+        )
+        return errors.New(msg)
+    }
+
+    // Compare Id
+    if want.Id != got.Id {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.Id:\nwant: %v\ngot: %v\n",
+            want.Id,
+            got.Id,
+        )
+        return errors.New(msg)
+    }
+
+    // Compare Method
+    if want.Method != got.Method {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.Method:\nwant: %v\ngot: %v\n",
+            want.Method,
+            got.Method,
+        )
+        return errors.New(msg)
+    }
+
+    // Compare Token
+    if !slices.Equal(want.Token, got.Token) {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.Token:\nwant: %v\ngot: %v\n",
+            want.Token,
+            got.Token,
+        )
+        return errors.New(msg)
+    }
+
+    // Compare Challenge
+    if !slices.Equal(want.Challenge, got.Challenge) {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.Challenge:\nwant: %v\ngot: %v\n",
+            want.Challenge,
+            got.Challenge,
+        )
+        return errors.New(msg)
+    }
+
+    // Compare Answer
+    if !slices.Equal(want.Answer, got.Answer) {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.Answer:\nwant: %v\ngot: %v\n",
+            want.Answer,
+            got.Answer,
+        )
+        return errors.New(msg)
+    }
+
+    // Compare Key
+    if !slices.Equal(want.Key, got.Key) {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.Key:\nwant: %v\ngot: %v\n",
+            want.Key,
+            got.Key,
+        )
+        return errors.New(msg)
+    }
+
+    // Compare Padding
+    if !slices.Equal(want.Padding, got.Padding) {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.Padding:\nwant: %v\ngot: %v\n",
+            want.Padding,
+            got.Padding,
+        )
+        return errors.New(msg)
+    }
+
+    // Compare Raw
+    if !slices.Equal(want.Raw, got.Raw) {
+        msg := fmt.Sprintf(
+            "Unmatched NegotiatePacket.Raw:\nwant: %v\ngot: %v\n",
+            want.Raw,
+            got.Raw,
+        )
+        return errors.New(msg)
+    }
+
+    return nil
 }
