@@ -6,6 +6,7 @@ import (
     "slices"
     "errors"
     "testing"
+    "crypto/rand"
 
     "drill/pkg/xcrypto"
     "drill/pkg/transport"
@@ -94,7 +95,7 @@ func TestInit2Packet(t *testing.T) {
 
     err = ComparePacketValue(
         got,
-        13579, 
+        0, 
         987654321,
         transport.INIT2,
         token,
@@ -111,13 +112,74 @@ func TestInit2Packet(t *testing.T) {
 }
 
 func TestInitAckPacket(t *testing.T) {
+    cphr := xcrypto.NewXCipher(PKEY)
 
+    cid := uint64(13579)
+    id := uint64(987654321)
+    challenge := transport.NewChallange(1234567890)
+    answer := make([]byte, 128)
+    key := make([]byte, 128)
+    rand.Read(answer)
+    rand.Read(key)
+
+    want := transport.NewInitAck(cid, id, challenge, answer, key, &cphr)
+    bytes := want.Raw
+    got, err := transport.NegotiatePacketFromBeBytes(&bytes, &cphr)
+
+    if err != nil {
+        log.Fatalf("NegotiatePacketFromBeBytes err (INITACK). %s", err)
+    }
+
+    err = ComparePacketValue(
+        got,
+        cid, 
+        id,
+        transport.INITACK,
+        []byte{},
+        challenge,        
+        answer,
+        key,
+        want.Padding,
+        want.Raw,
+    )
+
+    if err != nil {
+        log.Fatalf("NegotiatePacket (INITACK): %s", err)
+    }
 }
 
 func TestInitDonePacket(t *testing.T) {
+    cphr := xcrypto.NewXCipher(PKEY)
 
+    cid := uint64(13579)
+    id := uint64(987654321)
+    answer := make([]byte, 128)
+
+    want := transport.NewInitDone(cid, id, answer, &cphr)
+    bytes := want.Raw
+    got, err := transport.NegotiatePacketFromBeBytes(&bytes, &cphr)
+
+    if err != nil {
+        log.Fatalf("NegotiatePacketFromBeBytes err (INITDONE). %s", err)
+    }
+
+    err = ComparePacketValue(
+        got,
+        cid, 
+        id,
+        transport.INITDONE,
+        []byte{},
+        []byte{},
+        answer,
+        []byte{},
+        want.Padding,
+        want.Raw,
+    )
+
+    if err != nil {
+        log.Fatalf("NegotiatePacket (INITDONE): %s", err)
+    }
 }
-
 
 func ComparePacketValue(
     got transport.NegotiatePacket, 
