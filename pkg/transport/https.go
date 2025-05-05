@@ -1,4 +1,4 @@
-package proxy
+package transport
 
 import (
 	"log"
@@ -10,10 +10,27 @@ import (
 
 type HttpsProxy struct {
 	Address string
+	RemoteAddress string
+	Pkey string
+	Protocal string
 }
 
-func NewHttpsProxy(addr string) HttpsProxy {
-	return HttpsProxy { addr }
+func NewHttpsProxy(
+	addr string,
+	port uint16,
+	raddr string,
+	rport uint16,
+	pkey, protocal string,
+) HttpsProxy {
+	address       := fmt.Sprintf("%s:%v", addr, port)
+	remoteAddress := fmt.Sprintf("%s:%v", raddr, rport)
+
+	return HttpsProxy { 
+		address,
+		remoteAddress,
+		pkey,
+		protocal,
+	}
 }
 
 func (pxy *HttpsProxy) Run() {
