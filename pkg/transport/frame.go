@@ -1,12 +1,10 @@
 package transport
 
 import (
-	//"fmt"
+	"fmt"
 	"time"
-	//"crypto/rand"
 	"encoding/binary"
-	//"errors"
-
+	"errors"
 )
 
 const (
@@ -51,6 +49,41 @@ func NewFrame(method byte, seq, src, dst uint64, payload []byte) Frame {
 }
 
 func ParseFrame(data *[]byte) (Frame, error) {
+	const NEEDED int = (1+8+8+8+8+4)
 
-	return Frame{}, nil
+	if len(*data) < NEEDED {
+		msg := fmt.Sprintf(
+			"Parse Frame error: insufficient bytes. got: %v, needed %v",
+			len(*data),
+			NEEDED,
+		)
+		return Frame{}, errors.New(msg)
+	}
+
+	method := (*data)[0]
+	time   := int64(binary.BigEndian.Uint64((*data)[1:9]))
+	seq    := binary.BigEndian.Uint64((*data)[9:17])
+	src    := binary.BigEndian.Uint64((*data)[17:25])
+	dst    := binary.BigEndian.Uint64((*data)[25:33])
+	
+	payloadSize := int(binary.BigEndian.Uint32((*data)[33:37]))
+	if len((*data)[37:]) < payloadSize {
+		msg := fmt.Sprintf(
+			"Parse Frame error: insufficient bytes. got: %v, needed %v",
+			len(*data),
+			payloadSize,
+		)
+		return Frame{}, errors.New(msg)
+	}
+	payload := (*data)[37:37+payloadSize]
+
+	return Frame{
+		method,
+		time,
+		seq,
+		src,
+		dst,
+		payload,
+		(*data),
+	}, nil
 }
