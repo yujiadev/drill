@@ -44,6 +44,8 @@ func (txp *Server) Run() {
 
 	buf := make([]byte, 65535)
 	cphr := xcrypto.NewXCipher(txp.Pkey)
+	sessions := NewSessions()	
+	sessions.IsConnectionExist(10)
 	for {
 		n, addr, err := conn.ReadFromUDP(buf)
 		if err != nil {
