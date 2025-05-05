@@ -1,6 +1,7 @@
 package test
 
 import (
+    "time"
     "fmt"
     "log"
     "slices"
@@ -15,15 +16,76 @@ import (
 const PKEY = "7abY7sBqNrtN5Z+NElo19hBDO1ixZ1+EGrrMq0gAjeE="
 
 func TestNewChallange(t *testing.T) {
+    cphr := xcrypto.NewXCipher(PKEY)
 
+    challenge := transport.NewChallange(123456789)
+    ciphertext := cphr.Encrypt(&challenge)
+    plaintext, err1 := cphr.Decrypt(&ciphertext)
+    if err1 != nil {
+        log.Fatalf("Can't decrypt challenge. %s", err1)
+    }
+
+    //id, message, timestamp, err2 := transport.GetAnswer(&plaintext)
+    id, _, _, err2 := transport.GetAnswer(&plaintext)
+    if err2 != nil {
+        log.Fatalf("can't get answer. %s", err2)
+    }
+
+    if !slices.Equal(challenge, plaintext) {
+        log.Fatalf(
+            "Unmatched answer (slice). want: %v\ngot: %v\n", 
+            challenge, 
+            plaintext,
+        )
+    }
+
+    if 123456789 != id {
+        log.Fatalf("Unmatched answer id. want: %v\ngot: %v\n", id, 123456789)
+    }
 }
 
 func TestGetAnswer(t *testing.T) {
+    cphr := xcrypto.NewXCipher(PKEY)
 
+    challenge := transport.NewChallange(123456789)
+    ciphertext := cphr.Encrypt(&challenge)
+    plaintext, err1 := cphr.Decrypt(&ciphertext)
+    if err1 != nil {
+        log.Fatalf("Can't decrypt challenge. %s", err1)
+    }
+
+    //id, message, timestamp, err2 := transport.GetAnswer(&plaintext)
+    id, message, timestamp, err2 := transport.GetAnswer(&plaintext)
+    if err2 != nil {
+        log.Fatalf("can't get answer. %s", err2)
+    }
+
+    // ID    
+    if 123456789 != id {
+        log.Fatalf("Unmatched answer id. want: %v\ngot: %v\n", id, 123456789)
+    }
+
+    // Message
+    if !slices.Equal(message, challenge[8:72]) {
+        log.Fatalf(
+            "Unmatched answer message. want: %v\ngot: %v\n", 
+            message, 
+            challenge,
+        )
+    }
+
+    if (timestamp+5) < time.Now().Unix() {
+         log.Fatalf(
+            "Unmatched answer timestamp. want: %v\ngot: %v\n", 
+            message, 
+            challenge,
+        )
+    }
 }
 
 func TestInitPacket(t *testing.T) {
     cphr := xcrypto.NewXCipher(PKEY)
+
     want := transport.NewInit(&cphr)
     bytes := want.Raw
     got, err := transport.NegotiatePacketFromBeBytes(&bytes, &cphr)
@@ -46,12 +108,13 @@ func TestInitPacket(t *testing.T) {
     )
 
     if err != nil {
-        log.Fatalf("NegotiatePacket (Init): %s", err)
+        log.Fatalf("NegotiatePacket (INIT): %s", err)
     }
 }
 
 func TestRetryPacket(t *testing.T) {
     cphr := xcrypto.NewXCipher(PKEY)
+
     want := transport.NewRetry("127.0.0.1:8787", &cphr)
     bytes := want.Raw
     got, err := transport.NegotiatePacketFromBeBytes(&bytes, &cphr)
@@ -107,7 +170,7 @@ func TestInit2Packet(t *testing.T) {
     )
 
     if err != nil {
-        log.Fatalf("NegotiatePacket (RETRY): %s", err)
+        log.Fatalf("NegotiatePacket (INIT2): %s", err)
     }
 }
 

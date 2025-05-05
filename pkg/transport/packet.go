@@ -113,7 +113,7 @@ func GetAnswer(data *[]byte) (uint64, []byte, int64, error) {
 	}
 	msg = (*data)[8:72]
 
-	// Get id
+	// Get timestamp
 	if len((*data)[72:]) < 8 {
 		err := errors.New("can't parse 'tmsp' w/o 8 bytes")
 		return id, msg, tmsp, err
