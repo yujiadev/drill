@@ -6,6 +6,8 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"log"
+	aead "golang.org/x/crypto/chacha20poly1305"
 
 	"drill/pkg/xcrypto"
 )
@@ -208,4 +210,95 @@ func ParsePacket(data *[]byte, cphr *xcrypto.XCipher) (Packet, error) {
 		payload,
 		*data,
 	}, nil
+}
+
+func PeekConnectionId(data *[]byte) (uint64, error) {
+	if len(*data) < 8 {
+		return 0, errors.New("Parse error: insufficient bytes")
+	}
+
+	cid := binary.BigEndian.Uint64((*data)[0:8])
+	return cid, nil
+}
+
+func NewInit(cphr *xcrypto.XCipher) Packet {
+	padding := make([]byte, 1200)
+	rand.Read(padding)
+
+	return NewPacket(
+		0,
+		0,
+		INIT,
+		padding,
+		Negotiate{},
+		Frame{},
+		cphr,
+	)
+}
+
+func NewRetry(addr_str string, cphr *xcrypto.XCipher) Packet {
+	// Generate the token
+	now := time.Now().Unix()
+	addr := []byte(addr_str) 
+	rand_bytes := make([]byte, 16)
+	rand.Read(rand_bytes)
+
+	buf, err := binary.Append(nil, binary.BigEndian, now)
+	buf = append(buf, addr...)
+	buf = append(buf, rand_bytes...)
+
+	// Encrypt the token
+	key := make([]byte, aead.KeySize)
+	nonce := make(
+		[]byte,
+		aead.NonceSize, 
+		aead.NonceSize + len(buf) + aead.Overhead,
+	)
+	rand.Read(key)
+	rand.Read(nonce)
+	tcphr, err := aead.New(key)	
+
+	if err != nil {
+		log.Fatalf("can't init chacha20poly1305 cipher. %s", err)
+	}
+
+	token := tcphr.Seal(nonce, nonce, buf, nil)
+
+	// Build Packet
+	return NewPacket(
+		0,
+		0,
+		RETRY,
+		token,
+		Negotiate{},
+		Frame{},
+		cphr,
+	)
+}
+
+func NewInit2(id uint64, token []byte, cphr *xcrypto.XCipher) Packet {
+	auth := NewNegotiate(id, []byte{}, []byte{}, cphr)
+	return NewPacket(0, id, INIT2, token, auth, Frame{}, cphr)
+}
+
+func NewInitAck(cid, id uint64, ans, key[]byte, cphr *xcrypto.XCipher) Packet {
+	auth := NewNegotiate(id, ans, key, cphr)
+	return NewPacket(cid, id, INITACK, []byte{}, auth, Frame{}, cphr)
+}
+
+func NewInitDone(cid, id uint64, ans []byte, cphr *xcrypto.XCipher) Packet {
+	auth := NewNegotiate(id, ans, []byte{}, cphr)
+	return NewPacket(cid, id, INITDONE, []byte{}, auth, Frame{}, cphr)
+}
+
+func NewTx(cid, id uint64, payload Frame, cphr *xcrypto.XCipher) Packet {
+	return NewPacket(cid, id, TX, []byte{}, Negotiate{}, payload, cphr)
+}
+
+func NewFin(cid, id uint64, cphr *xcrypto.XCipher) Packet {
+	return NewPacket(cid, id, FIN, []byte{}, Negotiate{}, Frame{}, cphr)
+}
+
+func NewFinAck(cid, id uint64, cphr *xcrypto.XCipher) Packet {
+	return NewPacket(cid, id, FINACK, []byte{}, Negotiate{}, Frame{}, cphr)
 }

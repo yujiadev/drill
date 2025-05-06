@@ -43,9 +43,9 @@ func (txp *Server) Run() {
 	fmt.Printf("Server is listening on %s\n", txp.Address)
 
 	buf := make([]byte, 65535)
-	cphr := xcrypto.NewXCipher(txp.Pkey)
-	sessions := NewSessions()	
-	sessions.IsConnectionExist(10)
+	conns := make(map[uint64] chan []byte)
+	counter := uint64(1)
+
 	for {
 		n, addr, err := conn.ReadFromUDP(buf)
 		if err != nil {
@@ -53,17 +53,36 @@ func (txp *Server) Run() {
 			continue
 		}
 
-		go Authenticate(addr, buf[:n], cphr)
+		cid, err := PeekConnectionId(&buf)
+		if err != nil {
+			log.Printf("Error peeking recv UDP packet: %s", err)
+			continue
+		}
+
+		tx, ok := conns[cid]
+		if ok {
+			tx <- buf[0:n]
+			continue
+		}
+
+		ch := make(chan []byte, 65535)
+		new_cid := counter
+		counter += 1
+		go HandleNewConnection(addr, buf[0:n], new_cid, ch)
 	}
 }
 
-func Authenticate(addr *net.UDPAddr, pkt []byte, cphr xcrypto.XCipher) {
+func HandleNewConnection(
+	addr *net.UDPAddr, 
+	data []byte, 
+	cid uint64, 
+	ch <-chan []byte,
+) {
+	cphr := xcrypto.NewXCipher("7abY7sBqNrtN5Z+NElo19hBDO1ixZ1+EGrrMq0gAjeE=")
+	_, err := ParsePacket(&data, &cphr)
 
-	plntxt, err := cphr.Decrypt(&pkt)	
 	if err != nil {
-		log.Printf("Error Authenticating packet: %v", err)
+		log.Printf("Error parse new connection Packet: %s", err)
 		return
-	}
-
-	fmt.Printf(string(plntxt))
+	}	
 }
