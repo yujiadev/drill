@@ -56,11 +56,12 @@ func (pxy *HttpsProxy) Run() {
 	}
 }
 
-func negotiate(raddr, pkey string) net.Conn {
+func negotiate(raddr, pkey string) (uint64, []byte, *net.UDPConn) {
     time.Sleep(2 * time.Second)
 
     cid := uint64(0)
     id  := uint64(0)
+    key := []byte{}
 	buf := make([]byte, 65535)
     remoteAddr, err := net.ResolveUDPAddr("udp", raddr)
 	if err != nil {
@@ -115,6 +116,7 @@ func negotiate(raddr, pkey string) net.Conn {
 
 	bytes = buf[:n]
 	initAck, err := ParsePacket(&bytes, &cphr)
+	key = initAck.Authenticate.Key
 	if err != nil {
 		log.Fatalf("Err parse INITACK: %s\n", err)
 	}
@@ -128,7 +130,7 @@ func negotiate(raddr, pkey string) net.Conn {
 	}
 	fmt.Println("Sent INITDONE")
 
-	return conn
+	return cid, key, conn
 }
 
 func handleConnectRequest(clientConn net.Conn, serverConn net.Conn) {
