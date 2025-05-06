@@ -37,7 +37,7 @@ func NewHttpsProxy(
 }
 
 func (pxy *HttpsProxy) Run() {
-
+	// Negotiate with remote server 
 	negotiate(pxy.RemoteAddress, pxy.Pkey)
 
 	ln, err := net.Listen("tcp", pxy.Address)
@@ -46,76 +46,93 @@ func (pxy *HttpsProxy) Run() {
 	}
 
 	for {
-		conn, err := ln.Accept()
+		_, err := ln.Accept()
 		if err != nil {
 
 			continue
 		}
 
-		go handleConnectRequest(conn)
+		//go handleConnectRequest(clientConn, serverConn)
 	}
 }
 
 func negotiate(raddr, pkey string) net.Conn {
-    time.Sleep(3 * time.Second)
+    time.Sleep(2 * time.Second)
+
+    cid := uint64(0)
+    id  := uint64(0)
+	buf := make([]byte, 65535)
+    remoteAddr, err := net.ResolveUDPAddr("udp", raddr)
+	if err != nil {
+		log.Fatalf("Error resolve UDP address: %v\n", err)
+	}
 
 	cphr := xcrypto.NewXCipher(pkey)
-	conn, _ := net.Dial("udp", raddr)
-	buf := make([]byte, 65535)
+	conn, _ := net.DialUDP("udp", nil, remoteAddr)
 
+	//
 	// INIT
+	//
 	init := NewInit(&cphr)
-	conn.Write(init.Raw)
+	if err := WriteAllUDP(conn, init.Raw); err != nil {
+		log.Fatalf("Err send INIT: %s\n", err)		
+	}
 	fmt.Println("Sent INIT")
 
+	//
 	// RETRY
-	buf = make([]byte, 65535)
-	n, err := conn.Read(buf)
-
+	//
+	n, _, err := conn.ReadFromUDP(buf)
 	if err != nil {
-		fmt.Printf("Err: %s", err)
+		log.Fatalf("Err recv RETRY: %s\n", err)
 	}
 
 	bytes := buf[:n]
 	retry, err := ParsePacket(&bytes, &cphr)
 	if err != nil {
-		log.Fatalf("%s", err)
+		log.Fatalf("Err parse RETRY: %s\n", err)
 	}
 	fmt.Printf("Recv RETRY (%v)\n", retry.Method)
 
+	//
 	// INIT2
-	cid := retry.ConnectionId
-	id := retry.Id
+	//
+	cid = retry.ConnectionId
 	token := retry.Token
 	init2 := NewInit2(cid, id, token, &cphr)
-	conn.Write(init2.Raw)
+	if err := WriteAllUDP(conn, init2.Raw); err != nil {
+		log.Fatalf("Err send INIT2: %s\n", err)		
+	}
 	fmt.Println("Sent INIT2")
 
+	//
 	// INITACK
-	n, err = conn.Read(buf)
+	//
+	n, _, err = conn.ReadFromUDP(buf)
 	if err != nil {
-		fmt.Printf("Err: %s", err)
+		log.Fatalf("Err recv INITACK: %s\n", err)
 	}
+
 	bytes = buf[:n]
 	initAck, err := ParsePacket(&bytes, &cphr)
-
 	if err != nil {
-		log.Fatalf("%s", err)
+		log.Fatalf("Err parse INITACK: %s\n", err)
 	}
 	fmt.Printf("Recv INITACK (%v)\n", initAck.Method)
 
 	// INITDONE
 	ans := initAck.Authenticate.Challenge
 	initDone := NewInitDone(cid, id, ans, &cphr)
-
-	conn.Write(initDone.Raw)
+	if err := WriteAllUDP(conn, initDone.Raw); err != nil{
+		log.Fatalf("Err send INITDONE: %s\n", err)		
+	}
 	fmt.Println("Sent INITDONE")
 
 	return conn
 }
 
-func handleConnectRequest(conn net.Conn) {
-	request, err := http.ReadRequest(bufio.NewReader(conn))
+func handleConnectRequest(clientConn net.Conn, serverConn net.Conn) {
+	request, err := http.ReadRequest(bufio.NewReader(clientConn))
 
 	if err != nil {
 		log.Fatalf("handleConnectRequest read HTTP request error. %s", err)
@@ -127,7 +144,10 @@ func handleConnectRequest(conn net.Conn) {
 	}
 
 	fmt.Printf("%s\n", request.Host)
-	fmt.Printf("%s\n", conn.RemoteAddr())
+	fmt.Printf("%s\n", clientConn.RemoteAddr())
 
-	conn.Close()
+
+	//connFrame := NewFrame(CONN, 0, 0, 0, []byte(string(request.Host)))
 }
+
+
