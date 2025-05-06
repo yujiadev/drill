@@ -12,6 +12,8 @@ const (
 	DISCONN
 	FWD
 	ACK
+	OK
+	ERR
 )
 
 type Frame struct {
@@ -49,6 +51,10 @@ func NewFrame(method byte, seq, src, dst uint64, payload []byte) Frame {
 }
 
 func ParseFrame(data *[]byte) (Frame, error) {
+	if len(*data) == 0 {
+		return Frame{}, nil
+	}
+
 	const NEEDED int = (1+8+8+8+8+4)
 
 	if len(*data) < NEEDED {

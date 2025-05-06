@@ -6,6 +6,7 @@ import (
 	//"time"
 	"net"
 	//"sync"
+	"crypto/rand"
 
 	"drill/pkg/xcrypto"
 )
@@ -40,7 +41,6 @@ func (txp *Server) Run() {
 	if err != nil {
 		log.Fatalf("Error listening on UDP: %s", err)
 	}
-	fmt.Printf("Server is listening on %s\n", txp.Address)
 
 	buf := make([]byte, 65535)
 	conns := make(map[uint64] chan []byte)
@@ -68,53 +68,98 @@ func (txp *Server) Run() {
 		ch := make(chan []byte, 65535)
 		new_cid := counter
 		counter += 1
-		go HandleNewConnection(addr, buf[0:n], new_cid, ch)
+		conns[new_cid] = ch
+		go tunnel(conn, addr, buf[0:n], new_cid, ch)
 	}
 }
 
-func udpSender(data []byte, addr string) error {
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
-
-	if err != nil {
-		return err
-	}
-
-	conn, err := net.DialUDP("udp", nil, addr)
-	written := 0
-	for {
-		n, err := conn.Write(data)
-
-		if err != nil {
-			return err
-		}
-
-		written += n
-		if written == len(data) {
-			break
-		}
-	}
-
-	conn.Close()
-	return nil
-}
-
-func udpReceiver() {
-
-}
-
-func HandleNewConnection(
+func tunnel(
+	conn *net.UDPConn,
 	addr *net.UDPAddr, 
 	data []byte, 
 	cid uint64, 
 	ch <-chan []byte,
 ) {
 	cphr := xcrypto.NewXCipher("7abY7sBqNrtN5Z+NElo19hBDO1ixZ1+EGrrMq0gAjeE=")
-	_, err := ParsePacket(&data, &cphr)
-
+	init, err := ParsePacket(&data, &cphr)
 	if err != nil {
-		log.Printf("Error parse new connection Packet: %s", err)
+		log.Printf("Error parse INIT: %s", err)
 		return
 	}	
+	fmt.Printf("Recv INIT (%v)\n", init.Method)
+
+	// RETRY
+	retry := NewRetry(cid, fmt.Sprintf("%s", addr), &cphr)
+	conn.WriteToUDP(retry.Raw, addr)
+	fmt.Println("Sent RETRY")
+
+	// INIT2
+	data = <-ch
+	init2, err := ParsePacket(&data, &cphr)
+	if err != nil {
+		log.Printf("Error parse INIT2: %s", err)
+		return
+	}	
+	fmt.Printf("Recv INIT2 (%v)\n", init2.Method)
+
+	// INITACK
+	ans := init2.Authenticate.Challenge
+	id := init2.Authenticate.Id
+	key := make([]byte, 32)
+	rand.Read(key)
+
+	initAck := NewInitAck(cid, id, ans, key, &cphr)
+	conn.WriteToUDP(initAck.Raw, addr)
+
+	// INTIDONE
+	data = <-ch
+	initDone, err := ParsePacket(&data, &cphr)
+	if err != nil {
+		log.Printf("Error parse INITDONE: %s", err)
+		return
+	}	
+	fmt.Printf("Recv INITDONE (%v)\n", initDone.Method)
+
+	// Negotiation is complete
+
+	endpoints := make(map[uint64] chan Frame)
+	for {
+		cphrtxt := <- ch
+
+		pkt, err := ParsePacket(&cphrtxt, &cphr)
+		if err != nil {
+			log.Printf("Server tunnel error: %s", err)
+			continue
+		}
+
+		if pkt.Payload.Method == CONN {
+			connectTask()
+		}
+
+		tx, ok := endpoints[pkt.Payload.Source]
+
+		if !ok {
+			log.Printf("Server can't find the endpoints")	
+		}
+
+		tx <- pkt.Payload
+	}
+
 }
+
+
+func connectTask() {
+	fmt.Println("Connect Task")
+}
+
+func sendTask() {
+
+}
+
+func recvTask() {
+
+}
+
+
 
 

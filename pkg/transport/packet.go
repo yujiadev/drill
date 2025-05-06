@@ -68,6 +68,10 @@ func NewNegotiate(id uint64, ans, key []byte, cphr *xcrypto.XCipher) Negotiate {
 }
 
 func ParseNegotiate(cphrtxt *[]byte, cphr *xcrypto.XCipher) (Negotiate, error) {
+	if len(*cphrtxt) == 0 {
+		return Negotiate{}, nil
+	}
+
 	// Number of bytes that plaintext should have
 	const NEEDED int = 8+8+64+64+32
 	plntxt, err := cphr.Decrypt(cphrtxt)
@@ -91,7 +95,7 @@ func ParseNegotiate(cphrtxt *[]byte, cphr *xcrypto.XCipher) (Negotiate, error) {
 	id    := binary.BigEndian.Uint64(plntxt[8:16])
 	chall := plntxt[16:80]
 	ans   := plntxt[80:144]
-	key   := plntxt[144:208]
+	key   := plntxt[144:176]
 
 	return Negotiate{
 		time,
@@ -236,7 +240,7 @@ func NewInit(cphr *xcrypto.XCipher) Packet {
 	)
 }
 
-func NewRetry(addr_str string, cphr *xcrypto.XCipher) Packet {
+func NewRetry(cid uint64, addr_str string, cphr *xcrypto.XCipher) Packet {
 	// Generate the token
 	now := time.Now().Unix()
 	addr := []byte(addr_str) 
@@ -266,7 +270,7 @@ func NewRetry(addr_str string, cphr *xcrypto.XCipher) Packet {
 
 	// Build Packet
 	return NewPacket(
-		0,
+		cid,
 		0,
 		RETRY,
 		token,
@@ -276,9 +280,9 @@ func NewRetry(addr_str string, cphr *xcrypto.XCipher) Packet {
 	)
 }
 
-func NewInit2(id uint64, token []byte, cphr *xcrypto.XCipher) Packet {
+func NewInit2(cid, id uint64, token []byte, cphr *xcrypto.XCipher) Packet {
 	auth := NewNegotiate(id, []byte{}, []byte{}, cphr)
-	return NewPacket(0, id, INIT2, token, auth, Frame{}, cphr)
+	return NewPacket(cid, id, INIT2, token, auth, Frame{}, cphr)
 }
 
 func NewInitAck(cid, id uint64, ans, key[]byte, cphr *xcrypto.XCipher) Packet {
