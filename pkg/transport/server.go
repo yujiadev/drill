@@ -72,6 +72,36 @@ func (txp *Server) Run() {
 	}
 }
 
+func udpSender(data []byte, addr string) error {
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+
+	if err != nil {
+		return err
+	}
+
+	conn, err := net.DialUDP("udp", nil, addr)
+	written := 0
+	for {
+		n, err := conn.Write(data)
+
+		if err != nil {
+			return err
+		}
+
+		written += n
+		if written == len(data) {
+			break
+		}
+	}
+
+	conn.Close()
+	return nil
+}
+
+func udpReceiver() {
+
+}
+
 func HandleNewConnection(
 	addr *net.UDPAddr, 
 	data []byte, 
@@ -86,3 +116,5 @@ func HandleNewConnection(
 		return
 	}	
 }
+
+
