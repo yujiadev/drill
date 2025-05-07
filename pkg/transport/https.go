@@ -37,22 +37,29 @@ func NewHttpsProxy(
 }
 
 func (pxy *HttpsProxy) Run() {
-	// Negotiate with remote server 
-	negotiate(pxy.RemoteAddress, pxy.Pkey)
+	cphr := xcrypto.NewXCipher(pxy.Pkey)
 
+	// Negotiate with remote server 	
+	cid, _, udpConn := negotiate(pxy.RemoteAddress, pxy.Pkey)
+
+	sendCh := make(chan Frame, 65535)
+	go sendToServer(cid, 0, udpConn, sendCh, cphr)
+	go recvFromServer(udpConn, cphr)
+
+	// HTTPS proxy
 	ln, err := net.Listen("tcp", pxy.Address)
 	if err != nil {
 		log.Fatalf("HttpsProxy::Run() error. %s", err)	
 	}
 
 	for {
-		_, err := ln.Accept()
+		conn, err := ln.Accept()
 		if err != nil {
-
+			log.Printf("Err accept HTTP request: %s\n", err)
 			continue
 		}
 
-		//go handleConnectRequest(clientConn, serverConn)
+		go handleConnectRequest(conn, sendCh)
 	}
 }
 
@@ -133,23 +140,42 @@ func negotiate(raddr, pkey string) (uint64, []byte, *net.UDPConn) {
 	return cid, key, conn
 }
 
-func handleConnectRequest(clientConn net.Conn, serverConn net.Conn) {
-	request, err := http.ReadRequest(bufio.NewReader(clientConn))
+func sendToServer(
+	cid, id uint64,
+	conn *net.UDPConn, 
+	ch <-chan Frame, 
+	cphr xcrypto.XCipher,
+) {
+	for {
+		frame := <-ch
+		packet := NewTx(cid, id, frame, &cphr)
+
+		// Write all the bytes
+		if err := WriteAllUDP(conn, packet.Raw); err != nil {
+			log.Printf("Err send UDP: %s\n", err)
+			continue
+		}
+	}
+}
+
+func recvFromServer(conn *net.UDPConn, cphr xcrypto.XCipher) {
+
+}
+
+func handleConnectRequest(conn net.Conn, sendCh chan<-Frame) {
+	request, err := http.ReadRequest(bufio.NewReader(conn))
 
 	if err != nil {
-		log.Fatalf("handleConnectRequest read HTTP request error. %s", err)
+		log.Fatalf("Error read HTTP request: %s", err)
 	}
 
 	// Only support HTTP CONNECT method 
 	if request.Method != "CONNECT" {
-		log.Fatalf("handleConnectRequest() error. Not supported HTTP method")
+		log.Fatalf("Error not supported HTTP method")
 	}
 
-	fmt.Printf("%s\n", request.Host)
-	fmt.Printf("%s\n", clientConn.RemoteAddr())
-
-
-	//connFrame := NewFrame(CONN, 0, 0, 0, []byte(string(request.Host)))
+	connFrame := NewFrame(CONN, 0, 0, 0, []byte(string(request.Host)))
+	sendCh <-connFrame	
 }
 
 
