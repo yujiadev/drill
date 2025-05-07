@@ -33,6 +33,19 @@ func NewXCipher(key_str string) XCipher {
 	return XCipher{ cphr }
 }
 
+func NewXCipherFromBytes(key []byte) XCipher {
+	if len(key) != aead.KeySize {
+		log.Fatalf("XCipher::new() wrong size key size %v", len(key))
+	}
+
+	cphr, err := aead.New(key)
+	if err != nil {
+		log.Fatalf("XCipher::new() error. %v", err)
+	}
+
+	return XCipher{ cphr }
+}
+
 func (cphr *XCipher) Encrypt(plaintext *[]byte) []byte {	
 	nonce := make(
 		[]byte,

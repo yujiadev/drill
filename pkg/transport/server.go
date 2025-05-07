@@ -2,174 +2,145 @@ package transport
 
 import (
 	"fmt"
-	"log"	
-	//"time"
+	"log"
+	"sync"
 	"net"
-	//"sync"
 	"crypto/rand"
 
 	"drill/pkg/xcrypto"
 )
 
-type Server struct {
-	Address string
-	Pkey string		
-	Protocal string
+type ServerTransport struct {
+	laddr *net.UDPAddr
+	pkey string
+	protocal string
 }
 
-func NewServer(
-	host string,
-	port uint16,
+func NewServerTransport(
+	host string, 
+	port uint16, 
 	pkey, protocal string,
-) Server {
-	addr := fmt.Sprintf("%s:%v", host, port)	
+) ServerTransport {
+	host = fmt.Sprintf("%s:%v", host, port)
+	laddr, err := net.ResolveUDPAddr("udp",  host)
+	if err != nil {
+		log.Fatalf("Err resolve UDP laddr %s\n", laddr)	
+	}
 
-	return Server {
-		addr,
+	return ServerTransport {
+		laddr,
 		pkey,
 		protocal,
 	}
 }
 
-func (txp *Server) Run() {
-	udpAddr, err := net.ResolveUDPAddr("udp", txp.Address)
+func (st *ServerTransport) Run() {	
+	conn, err := net.ListenUDP("udp", st.laddr)
 	if err != nil {
-		log.Fatalf("Error resolving UDP address: %v", err)
+		log.Fatalf("Error listen on UDP: %s\n", err)
 	}
 
-	conn, err := net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		log.Fatalf("Error listening on UDP: %s", err)
-	}
-
-	buf := make([]byte, 65535)
-	conns := NewChannelMap[[]byte]()
-
-	for {
-		n, addr, err := conn.ReadFromUDP(buf)
-		if err != nil {
-			log.Printf("Error reading from UDP: %s", err)
-			continue
-		}
-
-		cid, err := PeekConnectionId(&buf)
-		if err != nil {
-			log.Printf("Error peeking recv UDP packet: %s", err)
-			continue
-		}
-
-		ch, exists := conns.Get(cid)
-		if !exists {
-		 	ch, cid := conns.Create()
-			go tunnel(conn, addr, buf[:n], cid, ch, conns)
-			continue
-		}
-		ch <- buf[:n]
-	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go serverRecvUDP(conn, st.pkey)
+	wg.Wait()
 }
 
-func tunnel(
-	conn *net.UDPConn,
-	addr *net.UDPAddr, 
-	data []byte, 
-	cid uint64, 
-	ch <-chan []byte,
-	conns *ChannelMap[[]byte],
-) {
-	cphr := xcrypto.NewXCipher("7abY7sBqNrtN5Z+NElo19hBDO1ixZ1+EGrrMq0gAjeE=")
-	init, err := ParsePacket(&data, &cphr)
-	if err != nil {
-		log.Printf("Error parse INIT: %s\n", err)
-		return
+func serverRecvUDP(conn *net.UDPConn, key string) {
+	chs := NewChannelMap[[]byte]()
+	buf := make([]byte, 65535)
+
+	for {
+		n, raddr, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			log.Fatalf("Err read UDP (serverRecvUDP): %s\n", err)
+			continue
+		}
+
+		trimBuf := buf[:n]
+		cid, err := PeekConnectionId(&trimBuf)
+		if err != nil {
+			log.Fatalf("Err peek CID (serverRecvUDP): %s\n", err)
+			continue
+		}
+
+		ch, exists := chs.Get(cid)
+		if !exists {
+			ch, cid := chs.Create()
+			go serverHandshake(conn, ch, trimBuf, cid, raddr, chs, key)
+			continue
+		}
+
+		ch <- trimBuf
 	}	
+}
+
+func serverHandshake(
+	conn *net.UDPConn, 
+	ch chan []byte, 
+	firstUDP []byte,
+	cid uint64, 
+	raddr *net.UDPAddr,
+	chs *ChannelMap[[]byte],
+	pkey string,
+) {
+	cphr := xcrypto.NewXCipher(pkey)
+
+	//
+	// INIT
+	// 
+	init, err := ParsePacket(&firstUDP, &cphr)
+	if err != nil {
+		log.Fatalf("Err parse INIT: %s\n", err)
+		return
+	}
 	fmt.Printf("Recv INIT (%v)\n", init.Method)
 
+	//
 	// RETRY
-	retry := NewRetry(cid, fmt.Sprintf("%s", addr), &cphr)
-	conn.WriteToUDP(retry.Raw, addr)
+	//
+	retry := NewRetry(cid, fmt.Sprintf("%s", raddr), &cphr)
+	if err := WriteAllUDPAddr(conn, retry.Raw, raddr); err != nil {
+		log.Fatalf("Err send RETRY: %s\n", err)
+		return
+	}
 	fmt.Println("Sent RETRY")
 
+	//
 	// INIT2
-	data = <-ch
+	//
+	data := <-ch
 	init2, err := ParsePacket(&data, &cphr)
 	if err != nil {
-		log.Printf("Error parse INIT2: %s", err)
+		log.Printf("Error parse INIT2: %s\n", err)
 		return
 	}	
 	fmt.Printf("Recv INIT2 (%v)\n", init2.Method)
 
+	//
 	// INITACK
+	//
 	ans := init2.Authenticate.Challenge
 	id := init2.Authenticate.Id
 	key := make([]byte, 32)
 	rand.Read(key)
 
 	initAck := NewInitAck(cid, id, ans, key, &cphr)
-	conn.WriteToUDP(initAck.Raw, addr)
+	if err := WriteAllUDPAddr(conn, initAck.Raw, raddr); err != nil {
+		log.Fatalf("Err send INITACK: %s\n", err)
+		return
+	}
+	fmt.Println("Sent INITACK")
 
-	// INTIDONE
+	//
+	// INITDONE	
+	//
 	data = <-ch
 	initDone, err := ParsePacket(&data, &cphr)
 	if err != nil {
-		log.Printf("Error parse INITDONE: %s", err)
+		log.Printf("Error parse INITDONE: %s\n", err)
 		return
 	}	
 	fmt.Printf("Recv INITDONE (%v)\n", initDone.Method)
-
-	// Negotiation is complete
-	endpoints := NewChannelMap[Frame]()
-
-	for {
-		cphrtxt := <- ch
-
-		pkt, err := ParsePacket(&cphrtxt, &cphr)
-		if err != nil {
-			log.Printf("Server tunnel error: %s", err)
-			continue
-		}
-
-		frame := pkt.Payload
-
-		if frame.Method == CONN {
-			go connectTask(frame, endpoints)
-			continue
-		}
-
-		if err := endpoints.Send(frame.Destination, &frame); err != nil {
-			log.Printf("Server can't find the endpoints")	
-			continue
-		}
-
-
-	}
-	
 }
 
-
-func sendToClient() {
-
-}
-
-func recvFromClient() {
-
-}
-
-func connectTask(frame Frame, endpoints *ChannelMap[Frame]) {
-	host := string(frame.Payload)
-	fmt.Printf("CONN request to %s\n", host)
-
-	/*
-	tcpConn, err := net.Dial("tcp", host)
-	if err != nil {
-		log.Printf("Err connect to %s: %s", host, err)
-	}
-	*/
-}
-
-func sendTask() {
-
-}
-
-func recvTask() {
-
-}

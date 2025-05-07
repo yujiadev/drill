@@ -25,6 +25,25 @@ func WriteAllUDP(conn *net.UDPConn, data []byte) error {
 	return nil
 }
 
+func WriteAllUDPAddr(conn *net.UDPConn, data []byte, addr *net.UDPAddr) error {
+	written := 0
+	stop := len(data)
+
+	for {
+		n, err := conn.WriteToUDP(data[written:], addr)
+		if err != nil {
+			return err
+		}
+
+		written += n
+		if written == stop {
+			break
+		}
+	}
+
+	return nil
+}
+
 type ChannelMap[T any] struct {
 	mu sync.RWMutex
 	counter uint64
