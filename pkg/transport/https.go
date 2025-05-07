@@ -43,8 +43,9 @@ func (pxy *HttpsProxy) Run() {
 	cid, _, udpConn := negotiate(pxy.RemoteAddress, pxy.Pkey)
 
 	sendCh := make(chan Frame, 65535)
+	recvChs := NewChannelMap[Frame]()
 	go sendToServer(cid, 0, udpConn, sendCh, cphr)
-	go recvFromServer(udpConn, cphr)
+	go recvFromServer(udpConn, recvChs, cphr)
 
 	// HTTPS proxy
 	ln, err := net.Listen("tcp", pxy.Address)
@@ -59,7 +60,7 @@ func (pxy *HttpsProxy) Run() {
 			continue
 		}
 
-		go handleConnectRequest(conn, sendCh)
+		go handleConnectRequest(conn, sendCh,recvChs)
 	}
 }
 
@@ -158,11 +159,40 @@ func sendToServer(
 	}
 }
 
-func recvFromServer(conn *net.UDPConn, cphr xcrypto.XCipher) {
+func recvFromServer(
+	conn *net.UDPConn, 
+	chs *ChannelMap[Frame], 
+	cphr xcrypto.XCipher,
+) {
 
+	buf := make([]byte, 65535)
+	for {
+		n, _, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			log.Printf("Err recv UDP: %s\n", err)
+			continue
+		}
+
+		data := buf[:n]
+		packet, err := ParsePacket(&data, &cphr)
+		if err != nil {
+			log.Printf("Err parse Packet: %s\n", err)
+			continue
+		}
+
+		dst := packet.Payload.Destination
+		if err := chs.Send(dst, &packet.Payload); err != nil {
+			log.Printf("Err route Frame: %s\n", err)
+			continue
+		}
+	}
 }
 
-func handleConnectRequest(conn net.Conn, sendCh chan<-Frame) {
+func handleConnectRequest(
+	conn net.Conn, 
+	sendCh chan<-Frame, 
+	recvChs *ChannelMap[Frame],
+) {
 	request, err := http.ReadRequest(bufio.NewReader(conn))
 
 	if err != nil {
@@ -174,8 +204,13 @@ func handleConnectRequest(conn net.Conn, sendCh chan<-Frame) {
 		log.Fatalf("Error not supported HTTP method")
 	}
 
-	connFrame := NewFrame(CONN, 0, 0, 0, []byte(string(request.Host)))
+	recvCh, id := recvChs.Create()
+	connFrame := NewFrame(CONN, 0, id, 0, []byte(string(request.Host)))
 	sendCh <-connFrame	
+
+	respFrame := <- recvCh
+
+	log.Printf("%s\n", respFrame)
 }
 
 

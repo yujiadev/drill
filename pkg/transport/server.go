@@ -43,8 +43,7 @@ func (txp *Server) Run() {
 	}
 
 	buf := make([]byte, 65535)
-	conns := make(map[uint64] chan []byte)
-	counter := uint64(1)
+	conns := NewChannelMap[[]byte]()
 
 	for {
 		n, addr, err := conn.ReadFromUDP(buf)
@@ -59,17 +58,13 @@ func (txp *Server) Run() {
 			continue
 		}
 
-		tx, ok := conns[cid]
-		if ok {
-			tx <- buf[0:n]
+		ch, exists := conns.Get(cid)
+		if !exists {
+		 	ch, cid := conns.Create()
+			go tunnel(conn, addr, buf[:n], cid, ch, conns)
 			continue
 		}
-
-		ch := make(chan []byte, 65535)
-		new_cid := counter
-		counter += 1
-		conns[new_cid] = ch
-		go tunnel(conn, addr, buf[0:n], new_cid, ch)
+		ch <- buf[:n]
 	}
 }
 
@@ -79,11 +74,12 @@ func tunnel(
 	data []byte, 
 	cid uint64, 
 	ch <-chan []byte,
+	conns *ChannelMap[[]byte],
 ) {
 	cphr := xcrypto.NewXCipher("7abY7sBqNrtN5Z+NElo19hBDO1ixZ1+EGrrMq0gAjeE=")
 	init, err := ParsePacket(&data, &cphr)
 	if err != nil {
-		log.Printf("Error parse INIT: %s", err)
+		log.Printf("Error parse INIT: %s\n", err)
 		return
 	}	
 	fmt.Printf("Recv INIT (%v)\n", init.Method)
@@ -121,8 +117,8 @@ func tunnel(
 	fmt.Printf("Recv INITDONE (%v)\n", initDone.Method)
 
 	// Negotiation is complete
+	endpoints := NewChannelMap[Frame]()
 
-	endpoints := make(map[uint64] chan Frame)
 	for {
 		cphrtxt := <- ch
 
@@ -132,24 +128,42 @@ func tunnel(
 			continue
 		}
 
-		if pkt.Payload.Method == CONN {
-			connectTask()
+		frame := pkt.Payload
+
+		if frame.Method == CONN {
+			go connectTask(frame, endpoints)
+			continue
 		}
 
-		tx, ok := endpoints[pkt.Payload.Source]
-
-		if !ok {
+		if err := endpoints.Send(frame.Destination, &frame); err != nil {
 			log.Printf("Server can't find the endpoints")	
+			continue
 		}
 
-		tx <- pkt.Payload
-	}
 
+	}
+	
 }
 
 
-func connectTask() {
-	fmt.Println("Connect Task")
+func sendToClient() {
+
+}
+
+func recvFromClient() {
+
+}
+
+func connectTask(frame Frame, endpoints *ChannelMap[Frame]) {
+	host := string(frame.Payload)
+	fmt.Printf("CONN request to %s\n", host)
+
+	/*
+	tcpConn, err := net.Dial("tcp", host)
+	if err != nil {
+		log.Printf("Err connect to %s: %s", host, err)
+	}
+	*/
 }
 
 func sendTask() {
@@ -159,7 +173,3 @@ func sendTask() {
 func recvTask() {
 
 }
-
-
-
-

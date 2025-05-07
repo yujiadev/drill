@@ -28,25 +28,34 @@ func WriteAllUDP(conn *net.UDPConn, data []byte) error {
 type ChannelMap[T any] struct {
 	mu sync.RWMutex
 	counter uint64
-	endpoints map[uint64] chan<-T
+	endpoints map[uint64] chan T
 }
 
 func NewChannelMap[T any]() *ChannelMap[T]{
 	return &ChannelMap[T]{ 
 		counter: 1,
-		endpoints: make(map[uint64]chan<-T),
+		endpoints: make(map[uint64]chan T),
 	}
 }
 
-func (cm *ChannelMap[T]) Create() chan T{	
+func (cm *ChannelMap[T]) Create() (chan T, uint64){	
 	ch := make(chan T, 65535)
+	var id uint64
 
 	cm.mu.Lock()
 	cm.endpoints[cm.counter] = ch
+	id = cm.counter
 	cm.counter += 1
 	cm.mu.Unlock()
 
-	return ch 
+	return ch, id
+}
+
+func (cm *ChannelMap[T]) Get(cid uint64) (chan T, bool) {
+	cm.mu.Lock()
+	ch, ok := cm.endpoints[cid]
+	cm.mu.Unlock()
+	return ch, ok
 }
 
 func (cm *ChannelMap[T]) Delete(id uint64) {
@@ -64,6 +73,6 @@ func (cm *ChannelMap[T]) Send(id uint64, value *T) error {
 		ch <- *value
 		return nil
 	}
-
+	cm.mu.RUnlock()	
 	return fmt.Errorf("channel %d not found", id)
 }
