@@ -67,12 +67,29 @@ func serverRecvUDP(conn *net.UDPConn, key string) {
 		ch, exists := chs.Get(cid)
 		if !exists {
 			ch, cid := chs.Create()
-			go serverHandshake(conn, ch, trimBuf, cid, raddr, chs, key)
+			go serverTunnel(conn, ch, trimBuf, cid, raddr, chs, key)
 			continue
 		}
 
 		ch <- trimBuf
 	}	
+}
+
+
+func serverTunnel(
+	conn *net.UDPConn, 
+	ch chan []byte, 
+	firstUDP []byte,
+	cid uint64, 
+	raddr *net.UDPAddr,
+	chs *ChannelMap[[]byte],
+	pkey string,
+) {
+	cid, key := serverHandshake(conn, ch, firstUDP, cid, raddr, chs, pkey)
+	fmt.Printf("cid: %v, key: %v\n", cid, key)	
+
+	
+
 }
 
 func serverHandshake(
@@ -83,7 +100,7 @@ func serverHandshake(
 	raddr *net.UDPAddr,
 	chs *ChannelMap[[]byte],
 	pkey string,
-) {
+) (uint64, []byte) {
 	cphr := xcrypto.NewXCipher(pkey)
 
 	//
@@ -92,7 +109,6 @@ func serverHandshake(
 	init, err := ParsePacket(&firstUDP, &cphr)
 	if err != nil {
 		log.Fatalf("Err parse INIT: %s\n", err)
-		return
 	}
 	fmt.Printf("Recv INIT (%v)\n", init.Method)
 
@@ -102,7 +118,6 @@ func serverHandshake(
 	retry := NewRetry(cid, fmt.Sprintf("%s", raddr), &cphr)
 	if err := WriteAllUDPAddr(conn, retry.Raw, raddr); err != nil {
 		log.Fatalf("Err send RETRY: %s\n", err)
-		return
 	}
 	fmt.Println("Sent RETRY")
 
@@ -113,7 +128,6 @@ func serverHandshake(
 	init2, err := ParsePacket(&data, &cphr)
 	if err != nil {
 		log.Printf("Error parse INIT2: %s\n", err)
-		return
 	}	
 	fmt.Printf("Recv INIT2 (%v)\n", init2.Method)
 
@@ -128,7 +142,6 @@ func serverHandshake(
 	initAck := NewInitAck(cid, id, ans, key, &cphr)
 	if err := WriteAllUDPAddr(conn, initAck.Raw, raddr); err != nil {
 		log.Fatalf("Err send INITACK: %s\n", err)
-		return
 	}
 	fmt.Println("Sent INITACK")
 
@@ -139,8 +152,20 @@ func serverHandshake(
 	initDone, err := ParsePacket(&data, &cphr)
 	if err != nil {
 		log.Printf("Error parse INITDONE: %s\n", err)
-		return
 	}	
 	fmt.Printf("Recv INITDONE (%v)\n", initDone.Method)
+
+	return cid, key
 }
 
+func connTarget() {
+
+}
+
+func sendTarget() {
+
+}
+
+func recvTarget() {
+
+}
