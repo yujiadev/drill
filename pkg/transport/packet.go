@@ -155,11 +155,12 @@ func NewPacket(
 }
 
 func ParsePacket(data *[]byte, cphr *xcrypto.XCipher) (Packet, error) {
+	// cid + id + method + tokenSize + authSize + payloadSize
 	const NEEDED int = (8+8+1+4+4+4)
 
 	if len(*data) < NEEDED {
 		msg := fmt.Sprintf(
-			"Parse Packet error: insufficient bytes. got: %v, needed %v",
+			"insufficient bytes to parse value of sizes out. got: %v, needed %v",
 			len(*data),
 			NEEDED,
 		)
@@ -175,7 +176,7 @@ func ParsePacket(data *[]byte, cphr *xcrypto.XCipher) (Packet, error) {
 
 	if len((*data)[29:]) < tokenSize+authSize+payloadSize {
 		msg := fmt.Sprintf(
-			"Parse Packet error: insufficient bytes. got: %v, needed %v",
+			"insufficient bytes to parse 'token/auth/payloadSize'. got: %v, needed %v",
 			len((*data)[29:]),
 			tokenSize+authSize+payloadSize,
 		)

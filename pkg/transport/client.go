@@ -10,7 +10,7 @@ import (
 )
 
 type ClientTransport struct {
-	laddr *net.UDPAddr
+	laddr *net.TCPAddr
 	raddr *net.UDPAddr
 	id uint64
 	pkey string
@@ -28,7 +28,7 @@ func NewClientTransport(
 	host = fmt.Sprintf("%s:%v", host, port)
 	remoteHost = fmt.Sprintf("%s:%v", remoteHost, remotePort)
 
-	laddr, err := net.ResolveUDPAddr("udp", host)
+	laddr, err := net.ResolveTCPAddr("tcp", host)
 	if err != nil {
 		log.Fatalf("Err resolve UDP laddr %s\n", laddr)	
 	}
@@ -51,11 +51,13 @@ func (ct *ClientTransport) Run() {
 	conn, cid, key := ct.clientHandshake()
 	ch := make(chan Frame, 65535)
 	chs := NewChannelMap[Frame]()
+	https := NewHttpsProxy(ct.laddr, ch, chs)
+
 	var wg sync.WaitGroup
 	wg.Add(1)
-
 	go clientSendUDP(cid, 0, key, conn, ch)
 	go clientRecvUDP(cid, 0, key, conn, chs)
+	go https.Run()
 
 	wg.Wait()
 }
@@ -169,16 +171,17 @@ func clientRecvUDP(
 
 		trimBuf := buf[:n]
 		packet, err := ParsePacket(&trimBuf, &cphr)
-
 		if err != nil {
 			log.Fatalf("Err parse packet (clientRecvUDP): %s\n", err)
 			continue
 		}
 
 		frame := packet.Payload
-		if err := chs.Send(frame.Destination, &frame); err != nil {
-			log.Fatalf("Err send frame (clientRecvUDP): %s\n", err)
+		ch, exists := chs.Get(frame.Destination)
+		if !exists {
+			log.Printf("Err send frame (clientRecvUDP): dest not exists\n")
 			continue
 		}
+		ch <- frame
 	}
 }

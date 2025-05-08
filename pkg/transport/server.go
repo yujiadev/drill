@@ -93,7 +93,7 @@ func serverTunnel(
 		data := <-ch
 		packet, err := ParsePacket(&data, &cphr)
 		if err != nil {
-			log.Fatalf("Err parse packet (serverTunnel): %s\n", err)
+			log.Printf("Err parse packet (serverTunnel): %s\n", err)
 			continue
 		}
 
@@ -105,7 +105,10 @@ func serverTunnel(
 
 		tx, exists := endpoints.Get(frame.Destination)
 		if !exists {
-			log.Fatalf("Err channel frame (serverTunnel): %s\n", err)
+			log.Printf(
+				"Err channel frame (serverTunnel): dest (%v) not found\n", 
+				frame.Destination,
+			)
 			continue
 		}
 		tx <- frame
@@ -199,39 +202,143 @@ func connTarget(
 		return
 	}
 
-	fmt.Printf("Connection to %s established\n", host)
+	log.Printf("Connection to %s established\n", host)
 
-	ch, id := endpoints.Create()
-	okFrame := NewFrame(OK, 0, id, dst, []byte("ok"))
+	// Register an endpoints for subsequent forwarding
+	ch, src := endpoints.Create()
+
+	// Notify the client side endpoint
+	okFrame := NewFrame(OK, 0, dst, src, []byte("ok"))
 	okPacket := NewTx(cid, 0, okFrame, &cphr)
 	WriteAllUDPAddr(conn, okPacket.Raw, raddr)
 
+	// Spin up 2 goroutine to handle the fowarding
+	ackCh := make(chan Frame, 65535)
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go sendTarget(targetConn, ch, &wg)
-	go recvTarget(targetConn, conn, id, &wg)
+
+	go sendTarget(targetConn, conn, ackCh, raddr, cid, src, dst, cphr, &wg)
+	go recvTarget(targetConn, conn, ch, ackCh, raddr, cid, src, dst, cphr, &wg)
+
 	wg.Wait()
 
-	endpoints.Delete(id)
+	// Delete the endpoint
+	endpoints.Delete(src)
 }
 
+// target send to client
 func sendTarget(
 	targetConn net.Conn, 
-	ch <-chan Frame, 
+	conn *net.UDPConn,
+	ackCh <-chan Frame,
+	raddr *net.UDPAddr,
+	cid, src, dst uint64,
+	cphr xcrypto.XCipher,
 	wg *sync.WaitGroup,
 ) {
+	buf := make([]byte, 4096)
+	seq := uint64(0)
 
+	for {
+		n, err := targetConn.Read(buf)
 
+		if err != nil {
+			finFrame := NewFrame(DISCONN, seq+1, src, dst, []byte("disconn"))
+			packet := NewTx(cid, 0, finFrame, &cphr)
+
+			if err := WriteAllUDPAddr(conn, packet.Raw, raddr); err != nil {
+				log.Printf("Err send DISCONN to %s (serverTunnel): %s\n", raddr, err)
+			}
+			break
+		}
+
+		data := buf[:n]
+		
+		log.Printf("Written %v bytes\n", n)
+		
+		frame := NewFrame(FWD, seq, src, dst, data)
+		packet := NewTx(cid, 0, frame, &cphr)
+
+		if err := WriteAllUDPAddr(conn, packet.Raw, raddr); err != nil {
+			log.Printf("Err send UDP to %s (serverTunnel): %s\n", raddr, err)
+			break
+		}
+
+		for {
+			ackFrame := <-ackCh
+
+			if ackFrame.Sequence == seq {
+				seq += 1
+				break
+			}
+
+			if err := WriteAllUDPAddr(conn, packet.Raw, raddr); err != nil {
+				log.Printf("Err send UDP to %s (serverTunnel): %s\n", raddr, err)
+				break
+			}
+		}
+	}
 
 	wg.Done()
 }
 
+// target recv from client
 func recvTarget(
 	targetConn net.Conn, 
-	conn *net.UDPConn, 
-	id uint64, 
+	conn *net.UDPConn,
+	recvCh <-chan Frame, 
+	ackCh chan<-Frame,
+	raddr *net.UDPAddr,
+	cid, src, dst uint64,
+	cphr xcrypto.XCipher,
 	wg *sync.WaitGroup,
 ) {
+	for {
+		frame := <-recvCh 
+		fmt.Println("RECV")
+
+		if frame.Method == ACK {
+			ackCh <- frame
+			continue
+		}
+
+		if frame.Method == FIN {
+			break
+		}
+
+		written := 0
+		for {
+			n, err := targetConn.Write(frame.Payload[written:])
+			if err != nil {
+				wg.Done()
+				return
+			}
+
+			written += n
+
+			//log.Printf("Written %v bytes\n", written)
+
+			if written == len(frame.Payload) {
+				break
+			}
+		}
+
+		// Send ACK to sender
+		ackFrame := NewFrame(
+			ACK, 
+			frame.Sequence, 
+			frame.Destination, 
+			frame.Source, 
+			[]byte("ack"),
+		)
+
+		packet := NewTx(cid, 0, ackFrame, &cphr)
+		if err := WriteAllUDPAddr(conn, packet.Raw, raddr); err != nil {
+			log.Printf("Err send ACK to %s (serverTunnel): %s\n", raddr, err)
+		}
+
+		fmt.Println("SENT")
+	}
 
 	wg.Done()
 }

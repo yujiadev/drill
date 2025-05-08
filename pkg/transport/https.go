@@ -1,216 +1,175 @@
 package transport
 
-import (
+import (	
 	"log"
-	"fmt"
-	"time"
 	"bufio"
 	"net"
 	"net/http"
-
-	"drill/pkg/xcrypto"
+	"sync"
 )
 
 type HttpsProxy struct {
-	Address string
-	RemoteAddress string
-	Pkey string
-	Protocal string
+	addr *net.TCPAddr
+	ch chan<-Frame
+	chs *ChannelMap[Frame]
 }
 
 func NewHttpsProxy(
-	addr string,
-	port uint16,
-	raddr string,
-	rport uint16,
-	pkey, protocal string,
+	addr *net.TCPAddr, 
+	ch chan<-Frame, 
+	chs *ChannelMap[Frame],
 ) HttpsProxy {
-	address       := fmt.Sprintf("%s:%v", addr, port)
-	remoteAddress := fmt.Sprintf("%s:%v", raddr, rport)
 
-	return HttpsProxy { 
-		address,
-		remoteAddress,
-		pkey,
-		protocal,
+	return HttpsProxy {
+		addr,
+		ch,
+		chs,
 	}
 }
 
-func (pxy *HttpsProxy) Run() {
-	cphr := xcrypto.NewXCipher(pxy.Pkey)
-
-	// Negotiate with remote server 	
-	cid, _, udpConn := negotiate(pxy.RemoteAddress, pxy.Pkey)
-
-	sendCh := make(chan Frame, 65535)
-	recvChs := NewChannelMap[Frame]()
-	go sendToServer(cid, 0, udpConn, sendCh, cphr)
-	go recvFromServer(udpConn, recvChs, cphr)
-
-	// HTTPS proxy
-	ln, err := net.Listen("tcp", pxy.Address)
+func (pxy *HttpsProxy) Run() {	
+	ln, err := 	net.ListenTCP("tcp", pxy.addr)
 	if err != nil {
-		log.Fatalf("HttpsProxy::Run() error. %s", err)	
+		log.Fatalf("Err listen on %s: %s\n", pxy.addr, err)
 	}
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			log.Printf("Err accept HTTP request: %s\n", err)
+			log.Printf("Err accept HTTP request: %s\n")
 			continue
 		}
 
-		go handleConnectRequest(conn, sendCh,recvChs)
-	}
+		go handleConnection(conn, pxy.ch, pxy.chs)
+	}		
 }
 
-func negotiate(raddr, pkey string) (uint64, []byte, *net.UDPConn) {
-    time.Sleep(2 * time.Second)
-
-    cid := uint64(0)
-    id  := uint64(0)
-    key := []byte{}
-	buf := make([]byte, 65535)
-    remoteAddr, err := net.ResolveUDPAddr("udp", raddr)
+func handleConnection(conn net.Conn, ch chan<-Frame, chs *ChannelMap[Frame]) {
+	request, err := http.ReadRequest(bufio.NewReader(conn))
 	if err != nil {
-		log.Fatalf("Error resolve UDP address: %v\n", err)
+		log.Fatalf("Err read HTTP request: %s\n", err)
 	}
 
-	cphr := xcrypto.NewXCipher(pkey)
-	conn, _ := net.DialUDP("udp", nil, remoteAddr)
-
-	//
-	// INIT
-	//
-	init := NewInit(&cphr)
-	if err := WriteAllUDP(conn, init.Raw); err != nil {
-		log.Fatalf("Err send INIT: %s\n", err)		
-	}
-	fmt.Println("Sent INIT")
-
-	//
-	// RETRY
-	//
-	n, _, err := conn.ReadFromUDP(buf)
-	if err != nil {
-		log.Fatalf("Err recv RETRY: %s\n", err)
+	// Only allow HTTP CONNECT method
+	if request.Method != "CONNECT" {
+		log.Fatalf("Err HTTP method: only HTTP CONNECT allowed\n")
 	}
 
-	bytes := buf[:n]
-	retry, err := ParsePacket(&bytes, &cphr)
-	if err != nil {
-		log.Fatalf("Err parse RETRY: %s\n", err)
-	}
-	fmt.Printf("Recv RETRY (%v)\n", retry.Method)
+	recvCh, src := chs.Create()
+	connFrame := NewFrame(CONN, 0, src, 0, []byte(string(request.Host)))
 
-	//
-	// INIT2
-	//
-	cid = retry.ConnectionId
-	token := retry.Token
-	init2 := NewInit2(cid, id, token, &cphr)
-	if err := WriteAllUDP(conn, init2.Raw); err != nil {
-		log.Fatalf("Err send INIT2: %s\n", err)		
-	}
-	fmt.Println("Sent INIT2")
+	ch <- connFrame
+	respFrame := <-recvCh 
 
-	//
-	// INITACK
-	//
-	n, _, err = conn.ReadFromUDP(buf)
-	if err != nil {
-		log.Fatalf("Err recv INITACK: %s\n", err)
+	if respFrame.Method != OK {
+		log.Fatalf("Err HTTP CONNECT request: can't fulfill\n")
 	}
+	dst := respFrame.Destination
 
-	bytes = buf[:n]
-	initAck, err := ParsePacket(&bytes, &cphr)
-	key = initAck.Authenticate.Key
-	if err != nil {
-		log.Fatalf("Err parse INITACK: %s\n", err)
-	}
-	fmt.Printf("Recv INITACK (%v)\n", initAck.Method)
+	// Notify client tunnel is established
+    _, err = conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+    if err != nil {
+		log.Fatalf("Err notify HTTPS client: %s\n", err)
+    }
 
-	// INITDONE
-	ans := initAck.Authenticate.Challenge
-	initDone := NewInitDone(cid, id, ans, &cphr)
-	if err := WriteAllUDP(conn, initDone.Raw); err != nil{
-		log.Fatalf("Err send INITDONE: %s\n", err)		
-	}
-	fmt.Println("Sent INITDONE")
+	ackCh := make(chan Frame, 65535)
 
-	return cid, key, conn
+    var wg sync.WaitGroup
+    wg.Add(2)
+
+	go sendClient(conn, ackCh, ch, src, dst, &wg)	
+	go recvClient(conn, ackCh, ch, recvCh, &wg)
+
+	wg.Wait()
 }
 
-func sendToServer(
-	cid, id uint64,
-	conn *net.UDPConn, 
-	ch <-chan Frame, 
-	cphr xcrypto.XCipher,
+// client send to server
+func sendClient(
+	conn net.Conn, 
+	ackCh <-chan Frame, 
+	sendCh chan<-Frame,
+	src, dst uint64,
+	wg *sync.WaitGroup,
 ) {
+	seq := uint64(0)
+
 	for {
-		frame := <-ch
-		packet := NewTx(cid, id, frame, &cphr)
+		buf := make([]byte, 4096)
+		n, err := conn.Read(buf)
 
-		// Write all the bytes
-		if err := WriteAllUDP(conn, packet.Raw); err != nil {
-			log.Printf("Err send UDP: %s\n", err)
-			continue
-		}
-	}
-}
-
-func recvFromServer(
-	conn *net.UDPConn, 
-	chs *ChannelMap[Frame], 
-	cphr xcrypto.XCipher,
-) {
-
-	buf := make([]byte, 65535)
-	for {
-		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			log.Printf("Err recv UDP: %s\n", err)
-			continue
+			log.Println("ERR")
+			finFrame := NewFrame(DISCONN, seq+1, src, dst, []byte("disconn"))
+			sendCh <- finFrame
+			break
 		}
 
 		data := buf[:n]
-		packet, err := ParsePacket(&data, &cphr)
-		if err != nil {
-			log.Printf("Err parse Packet: %s\n", err)
-			continue
+		
+		frame := NewFrame(FWD, seq, src, dst, data)
+		sendCh <- frame
+		log.Println("Sent More")
+
+		ackFrame := <-ackCh
+		
+		if ackFrame.Sequence == seq {
+			//seq += 1
+			//break
 		}
 
-		dst := packet.Payload.Destination
-		if err := chs.Send(dst, &packet.Payload); err != nil {
-			log.Printf("Err route Frame: %s\n", err)
-			continue
-		}
+		seq += 1
+		log.Println("Move on")
 	}
+
+	wg.Done()
 }
 
-func handleConnectRequest(
+// client recv from server
+func recvClient(
 	conn net.Conn, 
-	sendCh chan<-Frame, 
-	recvChs *ChannelMap[Frame],
+	ackCh chan<-Frame, 
+	sendCh chan<-Frame,
+	recvCh <-chan Frame,
+	wg *sync.WaitGroup,
 ) {
-	request, err := http.ReadRequest(bufio.NewReader(conn))
 
-	if err != nil {
-		log.Fatalf("Error read HTTP request: %s", err)
-	}
+	for {
+		frame := <-recvCh
 
-	// Only support HTTP CONNECT method 
-	if request.Method != "CONNECT" {
-		log.Fatalf("Error not supported HTTP method")
-	}
+		if frame.Method == ACK {
+			log.Println("RECV ACK")
+			ackCh <- frame
+			continue
+		}
 
-	recvCh, id := recvChs.Create()
-	connFrame := NewFrame(CONN, 0, id, 0, []byte(string(request.Host)))
-	sendCh <-connFrame	
+		if frame.Method == FIN {
+			break
+		}
 
-	respFrame := <- recvCh
+		written := 0
+		for {
+			n, err := conn.Write(frame.Payload[written:])
+			if err != nil {
+				wg.Done()
+				return
+			}
 
-	log.Printf("%s\n", respFrame)
+			written += n
+			if written == len(frame.Payload) {
+				break
+			}
+		}
+
+		// Send ACK to sender
+		ackFrame := NewFrame(
+			ACK, 
+			frame.Sequence, 
+			frame.Destination, 
+			frame.Source, 
+			[]byte("ack"),
+		)
+		sendCh <- ackFrame
+	}	
+
+	wg.Done()
 }
-
-
