@@ -86,10 +86,30 @@ func serverTunnel(
 	pkey string,
 ) {
 	cid, key := serverHandshake(conn, ch, firstUDP, cid, raddr, chs, pkey)
-	fmt.Printf("cid: %v, key: %v\n", cid, key)	
+	cphr := xcrypto.NewXCipherFromBytes(key)
+	endpoints := NewChannelMap[Frame]()
 
-	
+	for {
+		data := <-ch
+		packet, err := ParsePacket(&data, &cphr)
+		if err != nil {
+			log.Fatalf("Err parse packet (serverTunnel): %s\n", err)
+			continue
+		}
 
+		frame := packet.Payload
+		if frame.Method == CONN {
+			go connTarget(conn, endpoints, cid, raddr, frame, cphr)
+			continue
+		}
+
+		tx, exists := endpoints.Get(frame.Destination)
+		if !exists {
+			log.Fatalf("Err channel frame (serverTunnel): %s\n", err)
+			continue
+		}
+		tx <- frame
+	}		
 }
 
 func serverHandshake(
@@ -158,14 +178,60 @@ func serverHandshake(
 	return cid, key
 }
 
-func connTarget() {
+func connTarget(
+	conn *net.UDPConn,
+	endpoints *ChannelMap[Frame],
+	cid uint64,
+	raddr *net.UDPAddr,
+	frame Frame,
+	cphr xcrypto.XCipher,
+) {
+	host := string(frame.Payload)
+	dst := frame.Source
 
+	// Try to connect to the target host
+	targetConn, err := net.Dial("tcp", host)
+	if err != nil {
+		log.Printf("Err connect target (connTarget): %s\n", err)
+		errframe := NewFrame(ERR, 0, 0, dst, []byte("err"))
+		errPacket := NewTx(cid, 0, errframe, &cphr)
+		WriteAllUDPAddr(conn, errPacket.Raw, raddr)
+		return
+	}
+
+	fmt.Printf("Connection to %s established\n", host)
+
+	ch, id := endpoints.Create()
+	okFrame := NewFrame(OK, 0, id, dst, []byte("ok"))
+	okPacket := NewTx(cid, 0, okFrame, &cphr)
+	WriteAllUDPAddr(conn, okPacket.Raw, raddr)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go sendTarget(targetConn, ch, &wg)
+	go recvTarget(targetConn, conn, id, &wg)
+	wg.Wait()
+
+	endpoints.Delete(id)
 }
 
-func sendTarget() {
+func sendTarget(
+	targetConn net.Conn, 
+	ch <-chan Frame, 
+	wg *sync.WaitGroup,
+) {
 
+
+
+	wg.Done()
 }
 
-func recvTarget() {
+func recvTarget(
+	targetConn net.Conn, 
+	conn *net.UDPConn, 
+	id uint64, 
+	wg *sync.WaitGroup,
+) {
 
+	wg.Done()
 }
