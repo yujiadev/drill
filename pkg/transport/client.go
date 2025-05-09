@@ -65,7 +65,7 @@ func (ct *ClientTransport) Run() {
 func (ct *ClientTransport) clientHandshake() (*net.UDPConn, uint64, []byte) {
 	conn, err := net.DialUDP("udp", nil, ct.raddr)
 	if err != nil {
-		log.Fatalf("Err dail remote: %s\n", err)
+		log.Fatalf("Err dial remote: %s\n", err)
 	}
 
 	cid := uint64(0)
@@ -89,8 +89,7 @@ func (ct *ClientTransport) clientHandshake() (*net.UDPConn, uint64, []byte) {
 	if err != nil {
 		log.Fatalf("Err recv RETRY: %s\n", err)
 	}
-	trimBuf := buf[:n]
-	retry, err := ParsePacket(&trimBuf, &cphr)
+	retry, err := ParsePacket(buf[:n], &cphr)
 	if err != nil {
 		log.Fatalf("Err parse RETRY: %s\n", err)
 	}
@@ -115,8 +114,7 @@ func (ct *ClientTransport) clientHandshake() (*net.UDPConn, uint64, []byte) {
 		log.Fatalf("Err recv INITACK: %s\n", err)
 	}
 
-	trimBuf = buf[:n]
-	initAck, err := ParsePacket(&trimBuf, &cphr)
+	initAck, err := ParsePacket(buf[:n], &cphr)
 	key = initAck.Authenticate.Key
 	if err != nil {
 		log.Fatalf("Err parse INITACK: %s\n", err)
@@ -169,8 +167,7 @@ func clientRecvUDP(
 			continue
 		}
 
-		trimBuf := buf[:n]
-		packet, err := ParsePacket(&trimBuf, &cphr)
+		packet, err := ParsePacket(buf[:n], &cphr)
 		if err != nil {
 			log.Fatalf("Err parse packet (clientRecvUDP): %s\n", err)
 			continue

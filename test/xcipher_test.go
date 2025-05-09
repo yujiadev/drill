@@ -19,8 +19,8 @@ func TestXCipher(t *testing.T) {
 
     msg := []byte("Hello World! This is a test message for XCipher")
 
-    ciphertext := xcipher.Encrypt(&msg)
-    plaintext, err := xcipher.Decrypt(&ciphertext)
+    ciphertext := xcipher.Encrypt(msg)
+    plaintext, err := xcipher.Decrypt(ciphertext)
 
     if err != nil {
         log.Fatal(err)

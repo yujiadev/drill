@@ -44,7 +44,11 @@ func (pxy *HttpsProxy) Run() {
 	}		
 }
 
-func handleConnection(conn net.Conn, ch chan<-Frame, chs *ChannelMap[Frame]) {
+func handleConnection(
+	conn net.Conn, 
+	sendCh chan<-Frame, 
+	chs *ChannelMap[Frame],
+) {
 	request, err := http.ReadRequest(bufio.NewReader(conn))
 	if err != nil {
 		log.Printf("Err read HTTP request: %s\n", err)
@@ -58,12 +62,12 @@ func handleConnection(conn net.Conn, ch chan<-Frame, chs *ChannelMap[Frame]) {
 	}
 
 	recvCh, src := chs.Create()
-	connFrame := NewFrame(CONN, 0, src, 0, []byte(string(request.Host)))
+	connFrame := NewFrame(FCONN, 0, src, 0, []byte(string(request.Host)))
 
-	ch <- connFrame
+	sendCh <- connFrame
 	respFrame := <-recvCh 
 
-	if respFrame.Method != OK {
+	if respFrame.Method != FOK {
 		log.Printf("Err HTTP CONNECT request: can't fulfill\n")
 		return
 	}
@@ -81,17 +85,18 @@ func handleConnection(conn net.Conn, ch chan<-Frame, chs *ChannelMap[Frame]) {
     var wg sync.WaitGroup
     wg.Add(2)
 
-	go sendClient(conn, notifyCh, ch, src, dst, &wg)	
-	go recvClient(conn, notifyCh, ch, recvCh, &wg)
+	go sendClient(conn, sendCh, notifyCh, src, dst, &wg)	
+	go recvClient(conn, sendCh, recvCh, notifyCh, &wg)
 
 	wg.Wait()
 }
 
+
 // client send to server
 func sendClient(
 	conn net.Conn, 
-	notifyCh <-chan Frame, 
 	sendCh chan<-Frame,
+	notifyCh <-chan Frame, 
 	src, dst uint64,
 	wg *sync.WaitGroup,
 ) {
@@ -103,18 +108,18 @@ func sendClient(
 
 		if err != nil {
 			log.Printf("Err read (sendClient): %s\n", err)
-			finFrame := NewFrame(SENDDONE, seq+1, src, dst, []byte("senddone"))
+			finFrame := NewFrame(FSENDDONE, seq+1, src, dst, []byte("senddone"))
 			sendCh <- finFrame
 			break
 		}
 
-		frame := NewFrame(FWD, seq, src, dst, buf[:n])
+		frame := NewFrame(FFWD, seq, src, dst, buf[:n])
 		sendCh <- frame
 
 		for {
 			respFrame := <-notifyCh
 
-			if respFrame.Method == RECVDONE {
+			if respFrame.Method == FRECVDONE {
 				wg.Done()
 				return
 			}
@@ -130,21 +135,21 @@ func sendClient(
 // client recv from server
 func recvClient(
 	conn net.Conn, 
-	notifyCh chan<-Frame, 
 	sendCh chan<-Frame,
 	recvCh <-chan Frame,
+	notifyCh chan<-Frame, 
 	wg *sync.WaitGroup,
 ) {
 
 	for {
 		frame := <-recvCh
 
-		if frame.Method == ACK || frame.Method == RECVDONE {
+		if frame.Method == FACK || frame.Method == FRECVDONE {
 			notifyCh <- frame
 			continue
 		}
 
-		if frame.Method == SENDDONE {
+		if frame.Method == FSENDDONE {
 			break
 		}
 
@@ -153,7 +158,7 @@ func recvClient(
 		err := WriteAllTCP(conn, frame.Payload)
 		if err != nil {
 			recvDone := NewFrame(
-				RECVDONE, 
+				FRECVDONE, 
 				0, 
 				frame.Destination, 
 				frame.Source, 
@@ -165,7 +170,7 @@ func recvClient(
 
 		// Send ACK to sender
 		ackFrame := NewFrame(
-			ACK, 
+			FACK, 
 			frame.Sequence, 
 			frame.Destination, 
 			frame.Source, 

@@ -1,438 +1,229 @@
 package test
 
 import (
-    "time"
     "fmt"
     "log"
     "slices"
-    "errors"
-    "testing"
     "crypto/rand"
+    mrand "math/rand"   
+    "testing"
 
     "drill/pkg/xcrypto"
-    "drill/pkg/transport"
+    txp "drill/pkg/transport"
 )
 
-const PKEY = "7abY7sBqNrtN5Z+NElo19hBDO1ixZ1+EGrrMq0gAjeE="
-
-func TestNewChallange(t *testing.T) {
-    cphr := xcrypto.NewXCipher(PKEY)
-
-    challenge := transport.NewChallange(123456789)
-    ciphertext := cphr.Encrypt(&challenge)
-    plaintext, err1 := cphr.Decrypt(&ciphertext)
-    if err1 != nil {
-        log.Fatalf("Can't decrypt challenge. %s", err1)
-    }
-
-    //id, message, timestamp, err2 := transport.GetAnswer(&plaintext)
-    id, _, _, err2 := transport.GetAnswer(&plaintext)
-    if err2 != nil {
-        log.Fatalf("can't get answer. %s", err2)
-    }
-
-    if !slices.Equal(challenge, plaintext) {
-        log.Fatalf(
-            "Unmatched answer (slice). want: %v\ngot: %v\n", 
-            challenge, 
-            plaintext,
-        )
-    }
-
-    if 123456789 != id {
-        log.Fatalf("Unmatched answer id. want: %v\ngot: %v\n", id, 123456789)
-    }
-}
-
-func TestGetAnswer(t *testing.T) {
-    cphr := xcrypto.NewXCipher(PKEY)
-
-    challenge := transport.NewChallange(123456789)
-    ciphertext := cphr.Encrypt(&challenge)
-    plaintext, err1 := cphr.Decrypt(&ciphertext)
-    if err1 != nil {
-        log.Fatalf("Can't decrypt challenge. %s", err1)
-    }
-
-    //id, message, timestamp, err2 := transport.GetAnswer(&plaintext)
-    id, message, timestamp, err2 := transport.GetAnswer(&plaintext)
-    if err2 != nil {
-        log.Fatalf("can't get answer. %s", err2)
-    }
-
-    // ID    
-    if 123456789 != id {
-        log.Fatalf("Unmatched answer id. want: %v\ngot: %v\n", id, 123456789)
-    }
-
-    // Message
-    if !slices.Equal(message, challenge[8:72]) {
-        log.Fatalf(
-            "Unmatched answer message. want: %v\ngot: %v\n", 
-            message, 
-            challenge,
-        )
-    }
-
-    if (timestamp+5) < time.Now().Unix() {
-         log.Fatalf(
-            "Unmatched answer timestamp. want: %v\ngot: %v\n", 
-            message, 
-            challenge,
-        )
-    }
-}
+const PKEY2 = "7abY7sBqNrtN5Z+NElo19hBDO1ixZ1+EGrrMq0gAjeE="
 
 func TestInitPacket(t *testing.T) {
-    cphr := xcrypto.NewXCipher(PKEY)
+    cphr := xcrypto.NewXCipher(PKEY2)
 
-    want := transport.NewInit(&cphr)
+    // INIT
+    want := txp.NewInit(&cphr)
+
     bytes := want.Raw
-    got, err := transport.NegotiatePacketFromBeBytes(&bytes, &cphr)
+    got, err := txp.ParsePacket(bytes, &cphr)
 
     if err != nil {
-        log.Fatalf("NegotiatePacketFromBeBytes err (INIT). %s", err)
+        log.Fatalf("Err parse packet (INIT): %s\n", err)
     }
 
-    err = ComparePacketValue(
-        got,
-        0,
-        0,
-        transport.INIT,
-        want.Token,
-        want.Challenge,
-        want.Answer,
-        want.Key,
-        want.Padding,
-        want.Raw,
-    )
-
+    err = comparePackets(want, got)
     if err != nil {
-        log.Fatalf("NegotiatePacket (INIT): %s", err)
+        log.Fatalf("Err compare packets: %s\n", err)
     }
 }
 
 func TestRetryPacket(t *testing.T) {
-    cphr := xcrypto.NewXCipher(PKEY)
+    cphr := xcrypto.NewXCipher(PKEY2)
 
-    want := transport.NewRetry("127.0.0.1:8787", &cphr)
+    // RETRY
+    want := txp.NewRetry(12, []byte("127.0.0.1:8787"), &cphr)
+
     bytes := want.Raw
-    got, err := transport.NegotiatePacketFromBeBytes(&bytes, &cphr)
+    got, err := txp.ParsePacket(bytes, &cphr)
 
     if err != nil {
-        log.Fatalf("NegotiatePacketFromBeBytes err (RETRY). %s", err)
+        log.Fatalf("Err parse packet (RETRY): %s\n", err)
     }
 
-    err = ComparePacketValue(
-        got,
-        0,
-        0,
-        transport.RETRY,
-        want.Token,
-        want.Challenge,
-        want.Answer,
-        want.Key,
-        want.Padding,
-        want.Raw,
-    )
-
+    err = comparePackets(want, got)
     if err != nil {
-        log.Fatalf("NegotiatePacket (RETRY): %s", err)
+        log.Fatalf("Err compare packets: %s\n", err)
     }
 }
 
 func TestInit2Packet(t *testing.T) {
-    cphr := xcrypto.NewXCipher(PKEY)
+    cphr := xcrypto.NewXCipher(PKEY2)
+    token := make([]byte, mrand.Intn(65536))
+    rand.Read(token)
 
-    id := uint64(987654321)
-    token := transport.NewToken("127.0.0.1:8787")
-    challenge := transport.NewChallange(1234567890)
+    // INIT2
+    want := txp.NewInit2(12, 13, token, &cphr)
 
-    want := transport.NewInit2(id, token, challenge, &cphr)
     bytes := want.Raw
-    got, err := transport.NegotiatePacketFromBeBytes(&bytes, &cphr)
+    got, err := txp.ParsePacket(bytes, &cphr)
 
     if err != nil {
-        log.Fatalf("NegotiatePacketFromBeBytes err (INIT2). %s", err)
+        log.Fatalf("Err parse packet (INIT2): %s\n", err)
     }
 
-    err = ComparePacketValue(
-        got,
-        0, 
-        987654321,
-        transport.INIT2,
-        token,
-        challenge,        
-        []byte{},
-        []byte{},
-        want.Padding,
-        want.Raw,
-    )
-
+    err = comparePackets(want, got)
     if err != nil {
-        log.Fatalf("NegotiatePacket (INIT2): %s", err)
+        log.Fatalf("Err compare packets: %s\n", err)
     }
 }
 
-func TestInitAckPacket(t *testing.T) {
-    cphr := xcrypto.NewXCipher(PKEY)
-
-    cid := uint64(13579)
-    id := uint64(987654321)
-    challenge := transport.NewChallange(1234567890)
-    answer := make([]byte, 128)
-    key := make([]byte, 128)
-    rand.Read(answer)
+func TestInitAck(t *testing.T) {
+    cphr := xcrypto.NewXCipher(PKEY2)
+    ans := make([]byte, 64)
+    key := make([]byte, 32)
+    rand.Read(ans)
     rand.Read(key)
 
-    want := transport.NewInitAck(cid, id, challenge, answer, key, &cphr)
+    // INITACK
+    want := txp.NewInitAck(12, 13, ans, key, &cphr)
+
     bytes := want.Raw
-    got, err := transport.NegotiatePacketFromBeBytes(&bytes, &cphr)
+    got, err := txp.ParsePacket(bytes, &cphr)
 
     if err != nil {
-        log.Fatalf("NegotiatePacketFromBeBytes err (INITACK). %s", err)
+        log.Fatalf("Err parse packet (INITACK): %s\n", err)
     }
 
-    err = ComparePacketValue(
-        got,
-        cid, 
-        id,
-        transport.INITACK,
-        []byte{},
-        challenge,        
-        answer,
-        key,
-        want.Padding,
-        want.Raw,
-    )
-
+    err = comparePackets(want, got)
     if err != nil {
-        log.Fatalf("NegotiatePacket (INITACK): %s", err)
+        log.Fatalf("Err compare packets: %s\n", err)
     }
 }
 
-func TestInitDonePacket(t *testing.T) {
-    cphr := xcrypto.NewXCipher(PKEY)
+func TestInitDone(t *testing.T) {
+    cphr := xcrypto.NewXCipher(PKEY2)
+    ans := make([]byte, 64)
+    rand.Read(ans)
 
-    cid := uint64(13579)
-    id := uint64(987654321)
-    answer := make([]byte, 128)
+    // INITDONE
+    want := txp.NewInitDone(12, 13, ans, &cphr)
 
-    want := transport.NewInitDone(cid, id, answer, &cphr)
     bytes := want.Raw
-    got, err := transport.NegotiatePacketFromBeBytes(&bytes, &cphr)
+    got, err := txp.ParsePacket(bytes, &cphr)
 
     if err != nil {
-        log.Fatalf("NegotiatePacketFromBeBytes err (INITDONE). %s", err)
+        log.Fatalf("Err parse packet (INITDONE): %s\n", err)
     }
 
-    err = ComparePacketValue(
-        got,
-        cid, 
-        id,
-        transport.INITDONE,
-        []byte{},
-        []byte{},
-        answer,
-        []byte{},
-        want.Padding,
-        want.Raw,
-    )
+    err = comparePackets(want, got)
+    if err != nil {
+        log.Fatalf("Err compare packets: %s\n", err)
+    }   
+}
+
+func TestTx(t *testing.T) {
+    cphr := xcrypto.NewXCipher(PKEY2)
+    data := make([]byte, mrand.Intn(65536))
+    rand.Read(data)
+    frame := txp.NewFrame(txp.FFWD, 12, 13, 14, data)
+
+    // TX
+    want := txp.NewTx(12, 13, frame, &cphr)
+
+    bytes := want.Raw
+    got, err := txp.ParsePacket(bytes, &cphr)
 
     if err != nil {
-        log.Fatalf("NegotiatePacket (INITDONE): %s", err)
+        log.Fatalf("Err parse packet (TX): %s\n", err)
     }
+
+    err = comparePackets(want, got)
+    if err != nil {
+        log.Fatalf("Err compare packets: %s\n", err)
+    }    
 }
 
-func ComparePacketValue(
-    got transport.NegotiatePacket, 
-    cid, id uint64, 
-    method byte, 
-    token, challenge, answer, key, padding, raw []byte,
-) error {
-    // Compare CId
-    if cid != got.CId {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.CId:\nwant: %v\ngot: %v\n",
-            cid,
-            got.CId,
-        )
-        return errors.New(msg)
+func TestFin(t *testing.T) {
+    cphr := xcrypto.NewXCipher(PKEY2)
+
+    // FIN
+    want := txp.NewFin(12, 13, &cphr)
+
+    bytes := want.Raw
+    got, err := txp.ParsePacket(bytes, &cphr)
+
+    if err != nil {
+        log.Fatalf("Err parse packet (FIN): %s\n", err)
     }
 
-    // Compare Id
-    if id != got.Id {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.Id:\nwant: %v\ngot: %v\n",
-            id,
-            got.Id,
-        )
-        return errors.New(msg)
-    }
-
-    // Compare Method
-    if method != got.Method {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.Method:\nwant: %v\ngot: %v\n",
-            method,
-            got.Method,
-        )
-        return errors.New(msg)
-    }
-
-    // Compare Token
-    if !slices.Equal(token, got.Token) {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.Token:\nwant: %v\ngot: %v\n",
-            token,
-            got.Token,
-        )
-        return errors.New(msg)
-    }
-
-    // Compare Challenge
-    if !slices.Equal(challenge, got.Challenge) {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.Challenge:\nwant: %v\ngot: %v\n",
-            challenge,
-            got.Challenge,
-        )
-        return errors.New(msg)
-    }
-
-    // Compare Answer
-    if !slices.Equal(answer, got.Answer) {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.Answer:\nwant: %v\ngot: %v\n",
-            answer,
-            got.Answer,
-        )
-        return errors.New(msg)
-    }
-
-    // Compare Key
-    if !slices.Equal(key, got.Key) {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.Key:\nwant: %v\ngot: %v\n",
-            key,
-            got.Key,
-        )
-        return errors.New(msg)
-    }
-
-    // Compare Padding
-    if !slices.Equal(padding, got.Padding) {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.Padding:\nwant: %v\ngot: %v\n",
-            padding,
-            got.Padding,
-        )
-        return errors.New(msg)
-    }
-
-    // Compare Raw
-    if !slices.Equal(raw, got.Raw) {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.Raw:\nwant: %v\ngot: %v\n",
-            raw,
-            got.Raw,
-        )
-        return errors.New(msg)
-    }
-
-    return nil
+    err = comparePackets(want, got)
+    if err != nil {
+        log.Fatalf("Err compare packets: %s\n", err)
+    }    
 }
 
-func ComparePackets(got, want transport.NegotiatePacket) error {
-    // Compare CId
-    if want.CId != got.CId {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.CId:\nwant: %v\ngot: %v\n",
-            want.CId,
-            got.CId,
-        )
-        return errors.New(msg)
+func TestFinAck(t *testing.T) {
+    cphr := xcrypto.NewXCipher(PKEY2)
+    data := make([]byte, mrand.Intn(65536))
+    rand.Read(data)
+
+    // FINACK
+    want := txp.NewFinAck(12, 13, &cphr)
+
+    bytes := want.Raw
+    got, err := txp.ParsePacket(bytes, &cphr)
+
+    if err != nil {
+        log.Fatalf("Err parse packet (FINACK): %s\n", err)
     }
 
-    // Compare Id
+    err = comparePackets(want, got)
+    if err != nil {
+        log.Fatalf("Err compare packets: %s\n", err)
+    }    
+}
+
+func comparePackets(want, got txp.Packet) error {
+    if want.ConnectionId != got.ConnectionId {
+        return fmt.Errorf(
+            "unmatched packet connection id: want '%v', got '%v'",
+            want.ConnectionId,
+            got.ConnectionId,
+        )
+    }
+
     if want.Id != got.Id {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.Id:\nwant: %v\ngot: %v\n",
+        return fmt.Errorf(
+            "unmatched packet id: want '%v', got '%v'",
             want.Id,
             got.Id,
         )
-        return errors.New(msg)
     }
 
-    // Compare Method
     if want.Method != got.Method {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.Method:\nwant: %v\ngot: %v\n",
+        return fmt.Errorf(
+            "unmatched packet method: want '%v', got '%v'",
             want.Method,
             got.Method,
         )
-        return errors.New(msg)
     }
 
-    // Compare Token
     if !slices.Equal(want.Token, got.Token) {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.Token:\nwant: %v\ngot: %v\n",
+         return fmt.Errorf(
+            "unmatched packet token: want '%v', got '%v'",
             want.Token,
             got.Token,
         )
-        return errors.New(msg)
     }
 
-    // Compare Challenge
-    if !slices.Equal(want.Challenge, got.Challenge) {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.Challenge:\nwant: %v\ngot: %v\n",
-            want.Challenge,
-            got.Challenge,
-        )
-        return errors.New(msg)
+    if err := compareNegotiate(want.Authenticate, got.Authenticate); err != nil {
+        return err
     }
 
-    // Compare Answer
-    if !slices.Equal(want.Answer, got.Answer) {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.Answer:\nwant: %v\ngot: %v\n",
-            want.Answer,
-            got.Answer,
-        )
-        return errors.New(msg)
-    }
-
-    // Compare Key
-    if !slices.Equal(want.Key, got.Key) {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.Key:\nwant: %v\ngot: %v\n",
-            want.Key,
-            got.Key,
-        )
-        return errors.New(msg)
-    }
-
-    // Compare Padding
-    if !slices.Equal(want.Padding, got.Padding) {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.Padding:\nwant: %v\ngot: %v\n",
-            want.Padding,
-            got.Padding,
-        )
-        return errors.New(msg)
-    }
-
-    // Compare Raw
-    if !slices.Equal(want.Raw, got.Raw) {
-        msg := fmt.Sprintf(
-            "Unmatched NegotiatePacket.Raw:\nwant: %v\ngot: %v\n",
-            want.Raw,
-            got.Raw,
-        )
-        return errors.New(msg)
+    if err := compareFrames(want.Payload, got.Payload); err != nil {
+        return fmt.Errorf(
+            "unmatched packet payload: want '%v', got '%v'",
+            want.Payload,
+            got.Payload,
+        ) 
     }
 
     return nil
 }
+

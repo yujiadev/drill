@@ -14,14 +14,14 @@ import (
 
 const (
 	// Packet methods
-	INIT byte = iota
-	RETRY
-	INIT2
-	INITACK
-	INITDONE
-	TX
-	FIN
-	FINACK
+	PINIT byte = iota
+	PRETRY
+	PINIT2
+	PINITACK
+	PINITDONE
+	PTX
+	PFIN
+	PFINACK
 )
 
 type Negotiate struct {
@@ -55,7 +55,7 @@ func NewNegotiate(id uint64, ans, key []byte, cphr *xcrypto.XCipher) Negotiate {
 	buf = append(buf, key...)
 
 	// Encrypt the neogitate content
-	cphrtxt := cphr.Encrypt(&buf)
+	raw := cphr.Encrypt(buf)
 
 	return Negotiate {
 		int64(now),
@@ -63,12 +63,12 @@ func NewNegotiate(id uint64, ans, key []byte, cphr *xcrypto.XCipher) Negotiate {
 		chall,
 		ans,
 		key,
-		cphrtxt,
+		raw,
 	}
 }
 
-func ParseNegotiate(cphrtxt *[]byte, cphr *xcrypto.XCipher) (Negotiate, error) {
-	if len(*cphrtxt) == 0 {
+func ParseNegotiate(cphrtxt []byte, cphr *xcrypto.XCipher) (Negotiate, error) {
+	if len(cphrtxt) == 0 {
 		return Negotiate{}, nil
 	}
 
@@ -126,11 +126,11 @@ func NewPacket(
 	cphr *xcrypto.XCipher,
 ) Packet {
 	// Encrypted the payload
-	payloadBytes := cphr.Encrypt(&payload.Raw)
+	data := cphr.Encrypt(payload.Raw)
 
 	tokenSize := uint32(len(token))
 	authSize := uint32(len(auth.Raw))
-	payloadSize := uint32(len(payloadBytes))
+	payloadSize := uint32(len(data))
 
 	raw, _:= binary.Append(nil, binary.BigEndian, cid)
 	raw, _ = binary.Append(raw, binary.BigEndian, id)
@@ -141,7 +141,7 @@ func NewPacket(
 
 	raw = append(raw, token...)
 	raw = append(raw, auth.Raw...)
-	raw = append(raw, payloadBytes...)
+	raw = append(raw, data...)
 
 	return Packet {
 		cid,
@@ -154,56 +154,54 @@ func NewPacket(
 	}
 }
 
-func ParsePacket(data *[]byte, cphr *xcrypto.XCipher) (Packet, error) {
+func ParsePacket(data []byte, cphr *xcrypto.XCipher) (Packet, error) {
 	// cid + id + method + tokenSize + authSize + payloadSize
 	const NEEDED int = (8+8+1+4+4+4)
 
-	if len(*data) < NEEDED {
-		msg := fmt.Sprintf(
+	if len(data) < NEEDED {
+		err := fmt.Errorf(
 			"insufficient bytes to parse value of sizes out. got: %v, needed %v",
-			len(*data),
+			len(data),
 			NEEDED,
 		)
-		return Packet{}, errors.New(msg)
+		return Packet{}, err
 	}
 
-	cid          := binary.BigEndian.Uint64((*data)[0:8])	
-	id           := binary.BigEndian.Uint64((*data)[8:16])	
-	method       := (*data)[16]
-	tokenSize    := int(binary.BigEndian.Uint32((*data)[17:21]))
-	authSize     := int(binary.BigEndian.Uint32((*data)[21:25]))
-	payloadSize  := int(binary.BigEndian.Uint32((*data)[25:29]))
+	cid          := binary.BigEndian.Uint64(data[0:8])	
+	id           := binary.BigEndian.Uint64(data[8:16])	
+	method       := data[16]
+	tokenSize    := int(binary.BigEndian.Uint32(data[17:21]))
+	authSize     := int(binary.BigEndian.Uint32(data[21:25]))
+	payloadSize  := int(binary.BigEndian.Uint32(data[25:29]))
 
-	if len((*data)[29:]) < tokenSize+authSize+payloadSize {
-		msg := fmt.Sprintf(
-			"insufficient bytes to parse 'token/auth/payloadSize'. got: %v, needed %v",
-			len((*data)[29:]),
+	if len(data[29:]) < tokenSize+authSize+payloadSize {
+		err := fmt.Errorf(
+			"insufficient bytes to parse 'token/auth/payloadSize' (%v). got: %v, needed %v",
+			method,
+			len(data[29:]),
 			tokenSize+authSize+payloadSize,
 		)
-		return Packet{}, errors.New(msg)
+		return Packet{}, err
 	}
 
 	pvt          := 29
-	token        := (*data)[pvt:pvt+tokenSize]
-	authBytes    := (*data)[pvt+tokenSize:pvt+tokenSize+authSize]
-	payloadBytes := (*data)[pvt+tokenSize+authSize:pvt+tokenSize+authSize+payloadSize]
+	token        := data[pvt:pvt+tokenSize]
+	authBytes    := data[pvt+tokenSize:pvt+tokenSize+authSize]
+	payloadBytes := data[pvt+tokenSize+authSize:pvt+tokenSize+authSize+payloadSize]
 
-	auth, err := ParseNegotiate(&authBytes, cphr)
+	auth, err := ParseNegotiate(authBytes, cphr)
 	if err != nil {
-		msg := fmt.Sprintf("Parse Packet error: %s", err)
-		return Packet{}, errors.New(msg)
+		return Packet{}, err
 	}
 
-	payloadBytes, err = cphr.Decrypt(&payloadBytes)
+	payloadBytes, err = cphr.Decrypt(payloadBytes)
 	if err != nil {
-		msg := fmt.Sprintf("Parse Packet error: %s", err)
-		return Packet{}, errors.New(msg)
+		return Packet{}, err
 	}
 
 	payload, err := ParseFrame(&payloadBytes)
 	if err != nil {
-		msg := fmt.Sprintf("Parse Packet error: %s", err)
-		return Packet{}, errors.New(msg)
+		return Packet{}, err
 	}
 
 	return Packet{
@@ -213,16 +211,16 @@ func ParsePacket(data *[]byte, cphr *xcrypto.XCipher) (Packet, error) {
 		token,
 		auth,
 		payload,
-		*data,
+		data,
 	}, nil
 }
 
-func PeekConnectionId(data *[]byte) (uint64, error) {
-	if len(*data) < 8 {
+func PeekConnectionId(data []byte) (uint64, error) {
+	if len(data) < 8 {
 		return 0, errors.New("Parse error: insufficient bytes")
 	}
 
-	cid := binary.BigEndian.Uint64((*data)[0:8])
+	cid := binary.BigEndian.Uint64(data[0:8])
 	return cid, nil
 }
 
@@ -233,7 +231,7 @@ func NewInit(cphr *xcrypto.XCipher) Packet {
 	return NewPacket(
 		0,
 		0,
-		INIT,
+		PINIT,
 		padding,
 		Negotiate{},
 		Frame{},
@@ -241,10 +239,9 @@ func NewInit(cphr *xcrypto.XCipher) Packet {
 	)
 }
 
-func NewRetry(cid uint64, addr_str string, cphr *xcrypto.XCipher) Packet {
+func NewRetry(cid uint64, addr []byte, cphr *xcrypto.XCipher) Packet {
 	// Generate the token
 	now := time.Now().Unix()
-	addr := []byte(addr_str) 
 	rand_bytes := make([]byte, 16)
 	rand.Read(rand_bytes)
 
@@ -273,7 +270,7 @@ func NewRetry(cid uint64, addr_str string, cphr *xcrypto.XCipher) Packet {
 	return NewPacket(
 		cid,
 		0,
-		RETRY,
+		PRETRY,
 		token,
 		Negotiate{},
 		Frame{},
@@ -283,27 +280,27 @@ func NewRetry(cid uint64, addr_str string, cphr *xcrypto.XCipher) Packet {
 
 func NewInit2(cid, id uint64, token []byte, cphr *xcrypto.XCipher) Packet {
 	auth := NewNegotiate(id, []byte{}, []byte{}, cphr)
-	return NewPacket(cid, id, INIT2, token, auth, Frame{}, cphr)
+	return NewPacket(cid, id, PINIT2, token, auth, Frame{}, cphr)
 }
 
 func NewInitAck(cid, id uint64, ans, key[]byte, cphr *xcrypto.XCipher) Packet {
 	auth := NewNegotiate(id, ans, key, cphr)
-	return NewPacket(cid, id, INITACK, []byte{}, auth, Frame{}, cphr)
+	return NewPacket(cid, id, PINITACK, []byte{}, auth, Frame{}, cphr)
 }
 
 func NewInitDone(cid, id uint64, ans []byte, cphr *xcrypto.XCipher) Packet {
 	auth := NewNegotiate(id, ans, []byte{}, cphr)
-	return NewPacket(cid, id, INITDONE, []byte{}, auth, Frame{}, cphr)
+	return NewPacket(cid, id, PINITDONE, []byte{}, auth, Frame{}, cphr)
 }
 
 func NewTx(cid, id uint64, payload Frame, cphr *xcrypto.XCipher) Packet {
-	return NewPacket(cid, id, TX, []byte{}, Negotiate{}, payload, cphr)
+	return NewPacket(cid, id, PTX, []byte{}, Negotiate{}, payload, cphr)
 }
 
 func NewFin(cid, id uint64, cphr *xcrypto.XCipher) Packet {
-	return NewPacket(cid, id, FIN, []byte{}, Negotiate{}, Frame{}, cphr)
+	return NewPacket(cid, id, PFIN, []byte{}, Negotiate{}, Frame{}, cphr)
 }
 
 func NewFinAck(cid, id uint64, cphr *xcrypto.XCipher) Packet {
-	return NewPacket(cid, id, FINACK, []byte{}, Negotiate{}, Frame{}, cphr)
+	return NewPacket(cid, id, PFINACK, []byte{}, Negotiate{}, Frame{}, cphr)
 }

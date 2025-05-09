@@ -7,15 +7,16 @@ import (
 	"errors"
 )
 
-const (
-	CONN byte = iota
-	DISCONN
-	ACK
-	OK
-	ERR
-	FWD
-	SENDDONE
-	RECVDONE
+type FrameMethod byte
+
+const (	
+	FCONN byte = iota
+	FOK	
+	FERR
+	FFWD
+	FACK
+	FSENDDONE
+	FRECVDONE
 )
 
 type Frame struct {
@@ -61,7 +62,7 @@ func ParseFrame(data *[]byte) (Frame, error) {
 
 	if len(*data) < NEEDED {
 		msg := fmt.Sprintf(
-			"Parse Frame error: insufficient bytes. got: %v, needed %v",
+			"insufficient bytes. got: %v, needed %v",
 			len(*data),
 			NEEDED,
 		)
@@ -77,7 +78,7 @@ func ParseFrame(data *[]byte) (Frame, error) {
 	payloadSize := int(binary.BigEndian.Uint32((*data)[33:37]))
 	if len((*data)[37:]) < payloadSize {
 		msg := fmt.Sprintf(
-			"Parse Frame error: insufficient bytes. got: %v, needed %v",
+			"insufficient bytes. got: %v, needed %v",
 			len(*data),
 			payloadSize,
 		)

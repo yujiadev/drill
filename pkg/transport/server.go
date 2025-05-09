@@ -83,8 +83,7 @@ func serverRecvUDP(conn *net.UDPConn, key string) {
 			continue
 		}
 
-		trimBuf := buf[:n]
-		cid, err := PeekConnectionId(&trimBuf)
+		cid, err := PeekConnectionId(buf[:n])
 		if err != nil {
 			log.Fatalf("Err peek CID (serverRecvUDP): %s\n", err)
 			continue
@@ -93,14 +92,13 @@ func serverRecvUDP(conn *net.UDPConn, key string) {
 		ch, exists := chs.Get(cid)
 		if !exists {
 			ch, cid := chs.Create()
-			go serverTunnel(conn, ch, trimBuf, cid, raddr, chs, key)
+			go serverTunnel(conn, ch, buf[:n], cid, raddr, chs, key)
 			continue
 		}
 
-		ch <- trimBuf
+		ch <- buf[:n]
 	}	
 }
-
 
 func serverTunnel(
 	conn *net.UDPConn, 
@@ -117,14 +115,14 @@ func serverTunnel(
 
 	for {
 		data := <-ch
-		packet, err := ParsePacket(&data, &cphr)
+		packet, err := ParsePacket(data, &cphr)
 		if err != nil {
 			log.Printf("Err parse packet (serverTunnel): %s\n", err)
 			continue
 		}
 
 		frame := packet.Payload
-		if frame.Method == CONN {
+		if frame.Method == FCONN {
 			go connTarget(conn, endpoints, cid, raddr, frame, cphr)
 			continue
 		}
@@ -155,7 +153,7 @@ func serverHandshake(
 	//
 	// INIT
 	// 
-	init, err := ParsePacket(&firstUDP, &cphr)
+	init, err := ParsePacket(firstUDP, &cphr)
 	if err != nil {
 		log.Fatalf("Err parse INIT: %s\n", err)
 	}
@@ -164,7 +162,7 @@ func serverHandshake(
 	//
 	// RETRY
 	//
-	retry := NewRetry(cid, fmt.Sprintf("%s", raddr), &cphr)
+	retry := NewRetry(cid, []byte(fmt.Sprintf("%s", raddr)), &cphr)
 	if err := WriteAllUDPAddr(conn, retry.Raw, raddr); err != nil {
 		log.Fatalf("Err send RETRY: %s\n", err)
 	}
@@ -174,7 +172,7 @@ func serverHandshake(
 	// INIT2
 	//
 	data := <-ch
-	init2, err := ParsePacket(&data, &cphr)
+	init2, err := ParsePacket(data, &cphr)
 	if err != nil {
 		log.Printf("Error parse INIT2: %s\n", err)
 	}	
@@ -198,7 +196,7 @@ func serverHandshake(
 	// INITDONE	
 	//
 	data = <-ch
-	initDone, err := ParsePacket(&data, &cphr)
+	initDone, err := ParsePacket(data, &cphr)
 	if err != nil {
 		log.Printf("Error parse INITDONE: %s\n", err)
 	}	
@@ -217,12 +215,13 @@ func connTarget(
 ) {
 	host := string(frame.Payload)
 	dst := frame.Source
+	fmt.Println(host)
 
 	// Try to connect to the target host
 	targetConn, err := net.Dial("tcp", host)
 	if err != nil {
 		log.Printf("Err connect target (connTarget): %s\n", err)
-		errframe := NewFrame(ERR, 0, 0, dst, []byte("err"))
+		errframe := NewFrame(FERR, 0, 0, dst, []byte("err"))
 		errPacket := NewTx(cid, 0, errframe, &cphr)
 		WriteAllUDPAddr(conn, errPacket.Raw, raddr)
 		return
@@ -231,10 +230,10 @@ func connTarget(
 	log.Printf("Connection to %s established\n", host)
 
 	// Register an endpoints for subsequent forwarding
-	ch, src := endpoints.Create()
+	recvCh, src := endpoints.Create()
 
 	// Notify the client side endpoint
-	okFrame := NewFrame(OK, 0, dst, src, []byte("ok"))
+	okFrame := NewFrame(FOK, 0, dst, src, []byte("ok"))
 	okPacket := NewTx(cid, 0, okFrame, &cphr)
 	WriteAllUDPAddr(conn, okPacket.Raw, raddr)
 
@@ -246,7 +245,7 @@ func connTarget(
 
 	go serverSendUDP(conn, sendCh, cid, raddr, cphr)
 	go sendTarget(targetConn, sendCh, notifyCh, src, dst, &wg)
-	go recvTarget(targetConn, ch, sendCh, notifyCh, src, dst, &wg)
+	go recvTarget(targetConn, recvCh, sendCh, notifyCh, src, dst, &wg)
 
 	wg.Wait()
 
@@ -272,19 +271,19 @@ func sendTarget(
 
 		// target will no longer send any data
 		if err != nil {
-			sendDone := NewFrame(SENDDONE, 0, src, dst, []byte("senddone"))
+			sendDone := NewFrame(FSENDDONE, 0, src, dst, []byte("senddone"))
 			ch <- sendDone
 			break
 		}
 		
-		frame := NewFrame(FWD, seq, src, dst, buf[:n])
+		frame := NewFrame(FFWD, seq, src, dst, buf[:n])
 		ch <-frame
 		log.Printf("server payload size (%v): %v\n", frame.Destination ,len(frame.Payload))
 
 		respFrame := <-notifyCh
 
 		// client will no longer recv any data
-		if respFrame.Method == RECVDONE {
+		if respFrame.Method == FRECVDONE {
 			wg.Done()
 			return
 		}
@@ -308,12 +307,12 @@ func recvTarget(
 	for {
 		frame := <-recvCh
 
-		if frame.Method == ACK || frame.Method == RECVDONE {
+		if frame.Method == FACK || frame.Method == FRECVDONE {
 			notifyCh <- frame
 			continue
 		}
 
-		if frame.Method == SENDDONE {
+		if frame.Method == FSENDDONE {
 			break
 		}
 
@@ -324,7 +323,7 @@ func recvTarget(
 		}
 
 		ackFrame := NewFrame(
-			ACK,
+			FACK,
 			frame.Sequence,
 			frame.Destination,
 			frame.Source,

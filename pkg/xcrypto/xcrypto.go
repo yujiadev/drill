@@ -46,27 +46,27 @@ func NewXCipherFromBytes(key []byte) XCipher {
 	return XCipher{ cphr }
 }
 
-func (cphr *XCipher) Encrypt(plaintext *[]byte) []byte {	
+func (cphr *XCipher) Encrypt(plaintext []byte) []byte {	
 	nonce := make(
 		[]byte,
 		aead.NonceSize, 
-		aead.NonceSize + len(*plaintext) + aead.Overhead,
+		aead.NonceSize + len(plaintext) + aead.Overhead,
 	)
 
 	if _, err := rand.Read(nonce); err != nil {
 		log.Fatalf("XCipher::Encrypt() error, %s", err)
 	}
 
-	ciphertext := cphr.Cipher.Seal(nonce, nonce, *plaintext, nil)
+	ciphertext := cphr.Cipher.Seal(nonce, nonce, plaintext, nil)
 	return ciphertext
 }
 
-func (cphr *XCipher) Decrypt(encrypted *[]byte) ([] byte, error) {
-	if len(*encrypted) < aead.NonceSize {
+func (cphr *XCipher) Decrypt(encrypted []byte) ([] byte, error) {
+	if len(encrypted) < aead.NonceSize {
 		return nil, errors.New("XCipher::Decrypt() ciphertext too short")
 	}
 
-	nonce, ciphertext := (*encrypted)[:aead.NonceSize], (*encrypted)[aead.NonceSize:]
+	nonce, ciphertext := encrypted[:aead.NonceSize], encrypted[aead.NonceSize:]
 	plaintext, err := cphr.Cipher.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return nil, err
