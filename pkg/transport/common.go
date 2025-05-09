@@ -7,6 +7,25 @@ import (
 	"sync/atomic"
 )
 
+func WriteAllTCP(conn net.Conn, data []byte) error {
+	written := 0
+	stop := len(data)
+
+	for {
+		n, err := conn.Write(data[written:])
+		if err != nil {
+			return err
+		}
+
+		written += n
+		if written == stop {
+			break
+		}
+	}
+
+	return nil
+}
+
 func WriteAllUDP(conn *net.UDPConn, data []byte) error {
 	written := 0
 	stop := len(data)

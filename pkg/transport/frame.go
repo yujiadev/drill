@@ -10,10 +10,12 @@ import (
 const (
 	CONN byte = iota
 	DISCONN
-	FWD
 	ACK
 	OK
 	ERR
+	FWD
+	SENDDONE
+	RECVDONE
 )
 
 type Frame struct {

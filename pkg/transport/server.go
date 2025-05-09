@@ -46,6 +46,32 @@ func (st *ServerTransport) Run() {
 	wg.Wait()
 }
 
+func serverSendUDP(
+	conn *net.UDPConn,
+	ch <-chan Frame,
+	cid uint64,
+	raddr *net.UDPAddr, 
+	cphr xcrypto.XCipher,
+) {
+	for {
+		frame, ok := <-ch
+
+		// Channel is closed
+		if !ok {
+			log.Println("Channel close (serverSendUDP)")
+			return
+		}
+
+		packet := NewTx(cid, 0, frame, &cphr)
+		err := WriteAllUDPAddr(conn, packet.Raw, raddr)
+
+		if err != nil {
+			log.Printf("Err send UDP (serverSendUDP): %s\n", err)
+			continue
+		}
+	}
+}
+
 func serverRecvUDP(conn *net.UDPConn, key string) {
 	chs := NewChannelMap[[]byte]()
 	buf := make([]byte, 65535)
@@ -212,15 +238,19 @@ func connTarget(
 	okPacket := NewTx(cid, 0, okFrame, &cphr)
 	WriteAllUDPAddr(conn, okPacket.Raw, raddr)
 
-	// Spin up 2 goroutine to handle the fowarding
-	ackCh := make(chan Frame, 65535)
+	// Spin up 3 goroutines to handle the fowarding
+	notifyCh := make(chan Frame, 65535)
+	sendCh := make(chan Frame, 65535)
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	go sendTarget(targetConn, conn, ackCh, raddr, cid, src, dst, cphr, &wg)
-	go recvTarget(targetConn, conn, ch, ackCh, raddr, cid, src, dst, cphr, &wg)
+	go serverSendUDP(conn, sendCh, cid, raddr, cphr)
+	go sendTarget(targetConn, sendCh, notifyCh, src, dst, &wg)
+	go recvTarget(targetConn, ch, sendCh, notifyCh, src, dst, &wg)
 
 	wg.Wait()
+
+	//close(sendCh)
 
 	// Delete the endpoint
 	endpoints.Delete(src)
@@ -228,55 +258,38 @@ func connTarget(
 
 // target send to client
 func sendTarget(
-	targetConn net.Conn, 
-	conn *net.UDPConn,
-	ackCh <-chan Frame,
-	raddr *net.UDPAddr,
-	cid, src, dst uint64,
-	cphr xcrypto.XCipher,
+	conn net.Conn, 
+	ch chan<-Frame, 
+	notifyCh <-chan Frame, 
+	src, dst uint64,
 	wg *sync.WaitGroup,
 ) {
-	buf := make([]byte, 4096)
 	seq := uint64(0)
 
 	for {
-		n, err := targetConn.Read(buf)
+		buf := make([]byte, 4096)
+		n, err := conn.Read(buf)
 
+		// target will no longer send any data
 		if err != nil {
-			finFrame := NewFrame(DISCONN, seq+1, src, dst, []byte("disconn"))
-			packet := NewTx(cid, 0, finFrame, &cphr)
-
-			if err := WriteAllUDPAddr(conn, packet.Raw, raddr); err != nil {
-				log.Printf("Err send DISCONN to %s (serverTunnel): %s\n", raddr, err)
-			}
+			sendDone := NewFrame(SENDDONE, 0, src, dst, []byte("senddone"))
+			ch <- sendDone
 			break
 		}
-
-		data := buf[:n]
 		
-		log.Printf("Written %v bytes\n", n)
-		
-		frame := NewFrame(FWD, seq, src, dst, data)
-		packet := NewTx(cid, 0, frame, &cphr)
+		frame := NewFrame(FWD, seq, src, dst, buf[:n])
+		ch <-frame
+		log.Printf("server payload size (%v): %v\n", frame.Destination ,len(frame.Payload))
 
-		if err := WriteAllUDPAddr(conn, packet.Raw, raddr); err != nil {
-			log.Printf("Err send UDP to %s (serverTunnel): %s\n", raddr, err)
-			break
+		respFrame := <-notifyCh
+
+		// client will no longer recv any data
+		if respFrame.Method == RECVDONE {
+			wg.Done()
+			return
 		}
 
-		for {
-			ackFrame := <-ackCh
-
-			if ackFrame.Sequence == seq {
-				seq += 1
-				break
-			}
-
-			if err := WriteAllUDPAddr(conn, packet.Raw, raddr); err != nil {
-				log.Printf("Err send UDP to %s (serverTunnel): %s\n", raddr, err)
-				break
-			}
-		}
+		seq += 1
 	}
 
 	wg.Done()
@@ -284,60 +297,41 @@ func sendTarget(
 
 // target recv from client
 func recvTarget(
-	targetConn net.Conn, 
-	conn *net.UDPConn,
-	recvCh <-chan Frame, 
-	ackCh chan<-Frame,
-	raddr *net.UDPAddr,
-	cid, src, dst uint64,
-	cphr xcrypto.XCipher,
+	conn net.Conn,
+	recvCh <-chan Frame,	
+	sendCh chan<-Frame,
+	notifyCh chan<-Frame,
+	src, dst uint64,
 	wg *sync.WaitGroup,
 ) {
-	for {
-		frame := <-recvCh 
-		fmt.Println("RECV")
 
-		if frame.Method == ACK {
-			ackCh <- frame
+	for {
+		frame := <-recvCh
+
+		if frame.Method == ACK || frame.Method == RECVDONE {
+			notifyCh <- frame
 			continue
 		}
 
-		if frame.Method == FIN {
+		if frame.Method == SENDDONE {
 			break
 		}
 
-		written := 0
-		for {
-			n, err := targetConn.Write(frame.Payload[written:])
-			if err != nil {
-				wg.Done()
-				return
-			}
-
-			written += n
-
-			//log.Printf("Written %v bytes\n", written)
-
-			if written == len(frame.Payload) {
-				break
-			}
+		err := WriteAllTCP(conn, frame.Payload)
+		if err != nil {
+			log.Printf("Err send target: %s\n", err)
+			break			
 		}
 
-		// Send ACK to sender
 		ackFrame := NewFrame(
-			ACK, 
-			frame.Sequence, 
-			frame.Destination, 
-			frame.Source, 
+			ACK,
+			frame.Sequence,
+			frame.Destination,
+			frame.Source,
 			[]byte("ack"),
 		)
 
-		packet := NewTx(cid, 0, ackFrame, &cphr)
-		if err := WriteAllUDPAddr(conn, packet.Raw, raddr); err != nil {
-			log.Printf("Err send ACK to %s (serverTunnel): %s\n", raddr, err)
-		}
-
-		fmt.Println("SENT")
+		sendCh <- ackFrame	
 	}
 
 	wg.Done()
