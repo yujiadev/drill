@@ -7,6 +7,59 @@ import (
 
 type SendPacer struct {
 	buf []byte
+	waitAck uint64
+	acks []uint64
+	frames map[uint64]Frame
+	window uint64
+	pivot uint64
+	src uint64
+	dst uint64
+}
+
+func NewSendPacer(src, dst uint64) SendPacer {
+	buf := []byte{}	
+	waitAck := uint64(0)
+	acks := []uint64{}
+	frames := make(map[uint64]Frame)
+	window := uint64(12)
+	pivot := uint64(0)
+
+	return SendPacer {
+		buf,
+		waitAck,
+		acks,
+		frames,
+		window,
+		pivot,
+		src,
+		dst,
+	}
+}
+
+// Push incoming data into pacer's buffer
+func (sp *SendPacer) PushBuffer(data []byte) {
+	sp.buf = append(sp.buf, data...)
+}
+
+// Pop a frame for transmission
+func (sp *SendPacer) PopFrame() (Frame, bool){
+	// Return if out of window size or nothing can be popped
+	if sp.pivot >= sp.waitAck + sp.window || len(sp.buf) == 0 {
+		return Frame{}, false
+	}
+
+	first1024 := sp.buf[:min(len(sp.buf), 1024)]
+	frame := NewFrame(FFWD, sp.pivot, sp.src, sp.dst, first1024)
+
+	sp.pivot += 1
+	sp.buf = sp.buf[min(len(sp.buf), 1024):]
+	sp.frames[sp.pivot] = frame
+
+	return frame, true
+}
+
+func (sp *SendPacer) AckFrame(ack uint64) {
+
 }
 
 type RecvPacer struct {
