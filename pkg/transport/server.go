@@ -278,7 +278,6 @@ func sendTarget(
 		
 		frame := NewFrame(FFWD, seq, src, dst, buf[:n])
 		ch <-frame
-		log.Printf("server payload size (%v): %v\n", frame.Destination ,len(frame.Payload))
 
 		respFrame := <-notifyCh
 

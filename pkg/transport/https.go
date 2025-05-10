@@ -153,8 +153,6 @@ func recvClient(
 			break
 		}
 
-		log.Printf("client payload size (%v): %v\n", frame.Destination ,len(frame.Payload))
-
 		err := WriteAllTCP(conn, frame.Payload)
 		if err != nil {
 			recvDone := NewFrame(

@@ -176,10 +176,16 @@ func ParsePacket(data []byte, cphr *xcrypto.XCipher) (Packet, error) {
 
 	if len(data[29:]) < tokenSize+authSize+payloadSize {
 		err := fmt.Errorf(
-			"insufficient bytes to parse 'token/auth/payloadSize' (%v). got: %v, needed %v",
+			"insufficient bytes to parse " + 
+			"'token/auth/payloadSize' (%v). got: %v, needed %v. " +
+			"tokenSize: %v, authSize: %v, payloadSize: %v, total: %v",
 			method,
 			len(data[29:]),
 			tokenSize+authSize+payloadSize,
+			tokenSize,
+			authSize,
+			payloadSize,
+			len(data),
 		)
 		return Packet{}, err
 	}
