@@ -2,132 +2,150 @@ package transport
 
 import (
 	//"container/heap"
-	"fmt"
+	//"fmt"
 )
 
 type SendPacer struct {
-
+	buf []byte
 }
 
 type RecvPacer struct {
-	Sequence []uint64
+	waitSeq uint64
+	seq []uint64				// Acknowledged sequences in a binary heap
+	frames map[uint64]Frame 	// Map that stored recv frames
 }
 
 func NewRecvPacer() RecvPacer {
+	waitSeq := uint64(0)
 	seq := []uint64{}
+	frames := make(map[uint64]Frame)
+
 	return RecvPacer {
+		waitSeq,
 		seq,
+		frames,
 	}
 }
 
-func (rp *RecvPacer) Push(num uint64) {
-	rp.Sequence = append(rp.Sequence, num)
-	lastIndex := len(rp.Sequence)-1
-
-	rp.insertSort(lastIndex)
+func (rp *RecvPacer) swap(index1, index2 int) {
+	temp := rp.seq[index1]	
+	rp.seq[index1] = rp.seq[index2]
+	rp.seq[index2] = temp
 }
 
-func (rp *RecvPacer) insertSort(index int) {
-	// At root, return
+func (rp *RecvPacer) PushFrame(frame Frame) {
+	// Sequence of recv frame is less than the one that is waiting for, return
+	if frame.Sequence < rp.waitSeq {
+		return
+	}
+
+	if _, ok := rp.frames[frame.Sequence]; !ok {
+		// Store the frame for later usage
+		rp.frames[frame.Sequence] = frame
+
+		// Track the sequence of recv frame
+		rp.seq = append(rp.seq, frame.Sequence)
+
+		// Sort the heap
+		rp.heapifyUp(len(rp.seq)-1)
+		return
+	}
+}
+
+func (rp *RecvPacer) heapifyUp(index int) {
+	// Reach the root node, return
 	if index == 0 {
+		return 
+	}
+
+	parent := (index-1)/2
+	if rp.seq[parent] < rp.seq[index] {
 		return
 	}
 
-	parentIndex := (index-1)/2
-	if rp.Sequence[parentIndex] < rp.Sequence[index] {
+	rp.swap(parent, index)
+	rp.heapifyUp(parent)
+}
+
+func (rp *RecvPacer) PopFrame() (Frame, bool) {
+	// Return nothing in case of empty sequence or wait sequence still pending
+	if len(rp.seq) == 0 || rp.waitSeq != rp.seq[0] {
+		return Frame{}, false
+	}
+
+	// Pop the sequence	
+	lastSeq := rp.seq[len(rp.seq)-1]
+	rp.seq[0] = lastSeq
+	rp.seq = rp.seq[:len(rp.seq)-1]
+
+	// Retrive the frame, then remove the frame from storage
+	frame, _ := rp.frames[rp.waitSeq]
+	delete(rp.frames, rp.waitSeq)
+
+	// Update current wait sequence to the next one
+	rp.waitSeq += 1
+
+	// Compare if there are at least two sequences in track
+	if len(rp.seq) >= 2 {
+		rp.heapifyDown(0)
+	}
+
+	return frame, true
+}
+
+func (rp *RecvPacer) heapifyDown(parent int) {
+	if parent >= len(rp.seq) {
 		return
 	}
 
-	rp.Swap(parentIndex, index)
-	rp.insertSort(parentIndex)
-}
-
-func (rp * RecvPacer) Pop() (uint64, error) {
-	if len(rp.Sequence)	== 0 {
-		return 0, fmt.Errorf("empty seqence")
-	}
-
-	if len(rp.Sequence) == 1 {
-		seq := rp.Sequence[0]
-		rp.Sequence = []uint64{}
-		return seq, nil
-	}
-
-	if len(rp.Sequence) == 2 {
-		seq := rp.Sequence[0]
-		rp.Sequence = rp.Sequence[1:]
-		return seq, nil
-	}
-
-	seq := rp.Sequence[0]
-
-	// Put the last seq on the root
-	last := rp.Sequence[len(rp.Sequence)-1]
-	rp.Sequence[0] = last
-
-	 // Remove the extra seq
-	rp.Sequence = rp.Sequence[:len(rp.Sequence)-1]
-
-	rp.removeSort(0)
-
-	return seq, nil
-}
-
-func (rp *RecvPacer) removeSort(parent int) {
-	left  := 2*parent+1
+	left  := 2*parent+1	
 	right := 2*parent+2
-	bound := len(rp.Sequence) 
+	bound := len(rp.seq)
 
-	//fmt.Printf("parent: %v, left: %v, right: %v, bound: %v\n", parent, left, right, bound)
+	// Current parent node has two children
+	if left < bound && right < bound {
+		// Left node the smallest
+		if rp.seq[left]	< rp.seq[right] && rp.seq[left] < rp.seq[parent] {
+			rp.swap(left, parent)
+			rp.heapifyDown(left)
+			return
+		}
 
-	// At leaf
-	if parent >= bound || (right >= bound && left >= bound) {
-		return
+		// Right node the smallest
+		if rp.seq[right] < rp.seq[left] && rp.seq[right] < rp.seq[parent] {
+			rp.swap(right, parent)
+			rp.heapifyDown(right)
+			return
+		}
+
+		// Parent node is the smallest (unlikely, but possible)
+		if rp.seq[parent] < rp.seq[left] && rp.seq[parent] < rp.seq[right] {
+			return
+		}
 	}
 
-	// Compare to left leaf, left leaf is the smallest
-	if right >= bound && left < bound && rp.Sequence[left] < rp.Sequence[parent] {
-		rp.Swap(left, parent)
-		return
-	}
+	// Current parent node only has left node 
+	if left < bound && right >= bound {
+		// Left node the smallest
+		if rp.seq[left] < rp.seq[parent] {
+			rp.swap(left, parent)
+			rp.heapifyDown(left)
+			return
+		}
 
-	// Compare to left leaf, parent is the smallest
-	if right >= bound && left < bound && rp.Sequence[parent] < rp.Sequence[left] {
-		return
-	}
-
-	// Compare to right leaf, right leaf is the smallest
-	if left >= bound && right < bound && rp.Sequence[right] < rp.Sequence[parent] {
-		rp.Swap(right, parent)
+		// Parent node is the smallest
 		return 
 	}
 
-	// Compare to right leaf, parent is the smallest
-	if left >= bound && right < bound && rp.Sequence[parent] < rp.Sequence[right] {
-		return 
-	}
+	// Current parent node only has right node
+	if right < bound && left >= bound {
+		// Right node the smallest
+		if rp.seq[right] < rp.seq[parent] {
+			rp.swap(right, parent)
+			rp.heapifyDown(right)
+			return
+		}
 
-	// Left is the smallest child
-	if rp.Sequence[left] < rp.Sequence[right] && rp.Sequence[left] < rp.Sequence[parent] {
-		rp.Swap(left, parent)
-		rp.removeSort(left)
 		return
 	}
-
-	// Right is the smallest child
-	if rp.Sequence[right] < rp.Sequence[left] && rp.Sequence[right] < rp.Sequence[parent] {
-		rp.Swap(right, parent)
-		rp.removeSort(right)
-		return
-	}
-
-	// Parent is the smallest
-	return
-}
-
-func (rp *RecvPacer) Swap(index1, index2 int) {
-	temp := rp.Sequence[index1]	
-
-	rp.Sequence[index1] = rp.Sequence[index2]
-	rp.Sequence[index2] = temp
 }

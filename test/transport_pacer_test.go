@@ -1,48 +1,45 @@
 package test
 
 import (
-    "fmt"
+    //"fmt"
     "log"
     //"slices"
     "testing"
     //"crypto/rand"
     "time"
-    "math/rand"
+    mrand "math/rand"
 
     //"drill/pkg/xcrypto"
     txp "drill/pkg/transport"
 )
 
-func TestRecvPacerPush(t *testing.T) {
+func TestRecvPacerPushAndPop(t *testing.T) {
     pacer := txp.NewRecvPacer()
 
-    rand.Seed(time.Now().UnixNano())
-    permutation := rand.Perm(1000)
+    mrand.Seed(time.Now().UnixNano())
+    permutation := mrand.Perm(mrand.Intn(65535))
 
-    for _, value := range permutation {
-        pacer.Push(uint64(value))
+    size := 0
+    for _, seq := range permutation {
+        frame := txp.NewFrame(txp.FFWD, uint64(seq), 0, 0, []byte("test"))
+        pacer.PushFrame(frame)
+        size += 1
     }
 
-    //fmt.Println(pacer.Sequence)
-
-    output := []uint64{}
-    size := len(pacer.Sequence)
-    fmt.Printf("size is %v\n", size)
+    log.Println(size)
 
     for i := 0; i < size; i++ {
-        seq, _ := pacer.Pop()
-        output = append(output, seq)        
-    }
+        frame, ok := pacer.PopFrame()
 
-    //fmt.Println(output)
+        if !ok {
+            log.Fatalf("Err min seq frame should be popped\n")
+        }
 
-    for i := 0; i < size; i++ {
-        if uint64(i) != output[i] {
+        if frame.Sequence != uint64(i) {
             log.Fatalf(
-                "Unmatched: want '%v', got '%v', output '%v'", 
-                i, 
-                output[i],
-                output,
+                "Err min seq frame should be popped. want: '%v', got: '%v'\n",
+                i,
+                frame.Sequence,
             )
         }
     }
