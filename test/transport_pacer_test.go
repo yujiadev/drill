@@ -5,7 +5,7 @@ import (
     "log"
     //"slices"
     "testing"
-    "crypto/rand"
+    //"crypto/rand"
     "time"
     mrand "math/rand"
 
@@ -43,96 +43,54 @@ func TestRecvPacer(t *testing.T) {
     }
 }
 
-func TestSendRecv(t *testing.T) {
+func TestSendPacerPopFrameAndRecvAck(t *testing.T) {
     pacer := txp.NewSendPacer(12, 13) 
-
-    data := make([]byte, 10485760) // 1 mb of random bytes
-    rand.Read(data)
+    data := make([]byte, 1048576) // 1 mb of random bytes
     pacer.PushBuffer(data)
 
-    //
-    // First Pop
-    //
-    base := 0
-    npop := mrand.Intn(64)
+    base := uint64(0)
+    npop := mrand.Intn(63) + 1  // avoid 0
     sentAcks := []uint64{}
     permutation := mrand.Perm(npop)
 
-    // Pop  
-    for j := 0; j <= npop; j ++ {
-        _, ok := pacer.PopFrame()
-        if !ok {
-            log.Fatalf("Err pop frame (1st): (prep) pop is not unavailable\n")
+    for i := 0; i < 21; i++ {
+        // Pop  
+        for j := 0; j < npop; j ++ {
+            _, ok := pacer.PopFrame()
+            if !ok {
+                pacer.Report()
+                log.Fatalf(
+                    "Err pop frame: pop is not unavailable. "+
+                    "iter: %v, base: %v, npop: %v\n", 
+                    i,
+                    base,
+                    npop,
+                )
+            }
         }
-    }
 
-    // Generate a random permutation of acks
-    for _, seq := range permutation {
-        sentAcks = append(sentAcks, uint64(base+seq))
-    }
-
-    // Sync the generated acks with pacer
-    for _, ack := range sentAcks {
-        pacer.RecvAck(ack)
-    }
-
-    _, ok := pacer.PopFrame()
-    if !ok {
-        log.Fatalf("Err pop frame (1st): (after) pop is not unavailable\n")
-    }
-
-    /*
-    if frame.Sequence != uint64(base+npop+1) {
-        log.Fatalf(
-            "Err pop frame (1st): frame seq unmatched, want '%v', got '%v'\n",
-            base+npop+1,
-            frame.Sequence,
-        )
-    }
-    */
-
-    //
-    // Second Pop
-    //
-
-    /*
-    base = base + npop + 1
-    npop = mrand.Intn(64)
-    sentAcks = []uint64{}
-    permutation = mrand.Perm(npop)
-
-    // Pop  
-    for j := 0; j <= npop; j ++ {
-        _, ok := pacer.PopFrame()
-        if !ok {
-            log.Fatalf("Err pop frame (2rd): (prep) pop is not unavailable\n")
+        // Generate a random permutation of acks
+        for _, seq := range permutation {
+            sentAcks = append(sentAcks, uint64(base)+uint64(seq))
         }
-    }
+        
+        // Sync the generated acks with pacer
+        for _, ack := range sentAcks {
+            pacer.RecvAck(ack)
+        }
 
-    // Generate a random permutation of acks
-    for _, seq := range permutation {
-        sentAcks = append(sentAcks, uint64(base+seq))
-    }
+        if pacer.GetBacklog() != 0 {
+            pacer.Report()
+            log.Fatalf(
+                "Err non empty backlog, want 0, got %v\n", 
+                pacer.GetBacklog(),
+            )
+        }
 
-    // Sync the generated acks with pacer
-    for _, ack := range sentAcks {
-        pacer.RecvAck(ack)
-    }
 
-    _, ok = pacer.PopFrame()
-    if !ok {
-        log.Fatalf("Err pop frame (2rd): (after) pop is not unavailable\n")
-    }
-    */
-
-    /*
-    if frame.Sequence != uint64(base+npop+2) {
-        log.Fatalf(
-            "Err pop frame (2rd): frame seq unmatched, want '%v', got '%v'\n",
-            base+npop+2,
-            frame.Sequence,
-        )
-    }
-    */
-
+        base = base + uint64(npop)
+        npop = mrand.Intn(63) + 1  // avoid 0
+        sentAcks = []uint64{}
+        permutation = mrand.Perm(npop)
+    }   
 }

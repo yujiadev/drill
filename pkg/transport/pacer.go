@@ -39,8 +39,8 @@ func NewSendPacer(src, dst uint64) SendPacer {
 	}
 }
 
-func (sp *SendPacer) GetWaitAck() uint64 {
-	return sp.waitAck
+func (sp *SendPacer) GetBacklog() int {
+	return len(sp.acks)
 }
 
 // Push incoming data into pacer's buffer
@@ -48,25 +48,28 @@ func (sp *SendPacer) PushBuffer(data []byte) {
 	sp.buf = append(sp.buf, data...)
 }
 
+func (sp *SendPacer) Report() {
+	fmt.Printf(
+		"l(%v) --- p(%v) --- u(%v) | wnd (%v) | b(%v) | bfl (%v)\n", 
+		sp.waitAck, 
+		sp.pivot, 
+		sp.waitAck+sp.window,
+		sp.window,
+		sp.acks,
+		len(sp.buf),
+	)
+}
+
 // Pop a frame for transmission
 func (sp *SendPacer) PopFrame() (Frame, bool){
 	// Return if out of window size or nothing can be popped
-	if sp.pivot >= sp.waitAck + sp.window || len(sp.buf) == 0 {
-
-		fmt.Printf(
-			"sp.pivot = %v, sp.waitAck = %v, sp.window = %v, len(sp.buf) = %v"+
-			" sp.acks[0] = %v, len(sp.acks) = %v\n",
-			sp.pivot,
-			sp.waitAck,
-			sp.window,
-			len(sp.buf),
-			sp.acks[0],
-			len(sp.acks),
-		)
+	if sp.pivot > sp.waitAck + sp.window || len(sp.buf) == 0 {
+		sp.Report()
 
 		return Frame{}, false
 	}
 
+	
 	first1024 := sp.buf[:min(len(sp.buf), 1024)]
 	frame := NewFrame(FFWD, sp.pivot, sp.src, sp.dst, first1024)
 
@@ -96,7 +99,7 @@ func (sp *SendPacer) RecvAck(ack uint64) {
 			// Only one ack left, empty it then return
 			if len(sp.acks) == 1 {
 				sp.acks = []uint64{}
-				break
+				return
 			}
 
 			// Two acks left, pop the min one then recheck
