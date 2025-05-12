@@ -1,51 +1,111 @@
 package config
 
 import (
-	"fmt"
 	"log"
+	"net"
 	"os"
 
 	"github.com/goccy/go-yaml"
 )
 
-type DrillConfig struct {
+type RawClientConfig struct {
 	Client struct {
-		Enabled  bool   `yaml:"enabled"`
-		Host     string `yaml:"host"`  
-		Port     uint16 `yaml:"port"`
-		Protocal string `yaml:"protocal"`
-		Pkey     string `yaml:"pkey"`
+		Address string `yaml:"address"`
+		Pkey    string `yaml:"pkey"`
 	}
-	Server struct {
-		Enabled  bool   `yaml:"enabled"`
-		Host     string `yaml:"host"`  
-		Port     uint16 `yaml:"port"`
-		Protocal string `yaml:"protocal"`
-		Pkey     string `yaml:"pkey"`
+	Server RawServerConfig `yaml:"server"`
+}
+
+type RawServerConfig struct {
+	Address  string `yaml:"address"`
+	Protocol string `yaml:"protocal"` // Note: YAML tag matches existing typo in config files
+	Pkey     string `yaml:"pkey"`
+}
+
+type Client struct {
+	Address *net.TCPAddr
+	Pkey    string
+}
+
+type Server struct {
+	Address  *net.UDPAddr
+	Protocol string
+	Pkey     string
+}
+
+type ClientConfig struct {
+	Client Client
+	Server Server
+}
+
+func ReadThenParseClientConfig(cfgPath string) ClientConfig {
+	log.Println("Start reading and parsing client config file")
+	data := readConfigFile(cfgPath)
+	
+	var rawCfg RawClientConfig
+	parseYAML(data, &rawCfg)
+	log.Println("Finish reading and parsing client config file.")
+
+	return ClientConfig{
+		Client: Client{
+			Address: resolveTCPAddr(rawCfg.Client.Address),
+			Pkey:    rawCfg.Client.Pkey,
+		},
+		Server: Server{
+			Address:  resolveUDPAddr(rawCfg.Server.Address),
+			Protocol: rawCfg.Server.Protocol,
+			Pkey:     rawCfg.Server.Pkey,
+		},
 	}
 }
 
-func ReadThenParseConfig(cfg_path string) DrillConfig {
-	fmt.Println("ReadThenParseConfig starts reading and parsing config file")
+func ReadThenParseServerConfig(cfgPath string) Server {
+	log.Println("Start reading and parsing server config file")
+	data := readConfigFile(cfgPath)
 
+	var rawCfg RawServerConfig
+	parseYAML(data, &rawCfg)
+	log.Println("Finish reading and parsing server config file.")
+
+	return Server{
+		Address:  resolveUDPAddr(rawCfg.Address),
+		Protocol: rawCfg.Protocol,
+		Pkey:     rawCfg.Pkey,
+	}
+}
+
+func readConfigFile(path string) []byte {
 	pwd, err := os.Getwd()
 	if err != nil {
-		log.Fatalf("ReadThenParseConfig error (query pwd): %v", err)
+		log.Fatalf("Error getting working directory: %v", err)
 	}
+	log.Printf("Current working directory: %s", pwd)
 
-	fmt.Println("ReadThenParseConfig is at", pwd)
-
-	data, err := os.ReadFile(cfg_path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		log.Fatalf("ReadThenParseConfig error (read file): %v. At %s", err, pwd)
+		log.Fatalf("Error reading config file: %v (pwd: %s)", err, pwd)
 	}
+	return data
+}
 
-	var cfg DrillConfig
-	err = yaml.Unmarshal(data, &cfg)
+func parseYAML(data []byte, cfg interface{}) {
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		log.Fatalf("Error parsing YAML: %v", err)
+	}
+}
+
+func resolveTCPAddr(address string) *net.TCPAddr {
+	addr, err := net.ResolveTCPAddr("tcp", address)
 	if err != nil {
-		log.Fatalf("Failed to parse YAML: %v", err)
+		log.Fatalf("Error resolving TCP address %q: %v", address, err)
 	}
+	return addr
+}
 
-	fmt.Println("ReadThenParseConfig done.")
-	return cfg
+func resolveUDPAddr(address string) *net.UDPAddr {
+	addr, err := net.ResolveUDPAddr("udp", address)
+	if err != nil {
+		log.Fatalf("Error resolving UDP address %q: %v", address, err)
+	}
+	return addr
 }

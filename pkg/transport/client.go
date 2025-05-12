@@ -1,184 +1,103 @@
-package transport
+package transport 
 
 import (
 	"log"
-	"fmt"
 	"net"
-	"sync"
-
-	"drill/pkg/xcrypto"
 )
 
 type ClientTransport struct {
-	laddr *net.TCPAddr
-	raddr *net.UDPAddr
-	id uint64
-	pkey string
-	protocal string
+	laddr 		*net.TCPAddr
+	raddr 		*net.UDPAddr	
+	pkey 		string
+	protocol 	string
 }
 
 func NewClientTransport(
-	host string,
-	port uint16,
-	remoteHost string,
-	remotePort uint16,
-	id uint64,
-	pkey, protocal string,
+	laddr *net.TCPAddr,
+	raddr *net.UDPAddr,
+	pkey, protocol string,
 ) ClientTransport {
-	host = fmt.Sprintf("%s:%v", host, port)
-	remoteHost = fmt.Sprintf("%s:%v", remoteHost, remotePort)
-
-	laddr, err := net.ResolveTCPAddr("tcp", host)
-	if err != nil {
-		log.Fatalf("Err resolve UDP laddr %s\n", laddr)	
-	}
-
-	raddr, err := net.ResolveUDPAddr("udp", remoteHost)
-	if err != nil {
-		log.Fatalf("Err resolve UDP raddr %s\n", raddr)	
-	}
-
 	return ClientTransport {
 		laddr,
 		raddr,
-		id,
 		pkey,
-		protocal,
+		protocol,
 	}
 }
 
 func (ct *ClientTransport) Run() {
-	conn, cid, key := ct.clientHandshake()
-	ch := make(chan Frame, 65535)
-	chs := NewChannelMap[Frame]()
-	https := NewHttpsProxy(ct.laddr, ch, chs)
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go clientSendUDP(cid, 0, key, conn, ch)
-	go clientRecvUDP(cid, 0, key, conn, chs)
-	go https.Run()
-
-	wg.Wait()
-}
-
-func (ct *ClientTransport) clientHandshake() (*net.UDPConn, uint64, []byte) {
+	sendCh := make(chan Frame, 65535)
+	delegateCh := make(chan ConfirmedConn, 65535)
+	chMap := NewChannelMap[Frame]()
 	conn, err := net.DialUDP("udp", nil, ct.raddr)
+
 	if err != nil {
-		log.Fatalf("Err dial remote: %s\n", err)
+		log.Fatalf("Err dial %s: %s\n", ct.raddr, err)
 	}
 
-	cid := uint64(0)
-	key := []byte{}
-	buf := make([]byte, 65535)
-	cphr := xcrypto.NewXCipher(ct.pkey)	
+	go sendToServer(conn, sendCh)
+	go recvFromServer(conn, chMap)
+	go delegate() 
 
-	//
-	// INIT
-	//
-	init := NewInit(&cphr)
-	if err := WriteAllUDP(conn, init.Raw); err != nil {
-		log.Fatalf("Err send INIT: %s\n", err)		
-	}
-	fmt.Println("Sent INIT")
+	// Start the HTTPS proxy
+	https := NewHttpsProxy(
+		ct.laddr,
+		sendCh,
+		delegateCh,
+		chMap,
+	)
 
-	//
-	// RETRY
-	//
-	n, _, err := conn.ReadFromUDP(buf)
-	if err != nil {
-		log.Fatalf("Err recv RETRY: %s\n", err)
-	}
-	retry, err := ParsePacket(buf[:n], &cphr)
-	if err != nil {
-		log.Fatalf("Err parse RETRY: %s\n", err)
-	}
-	fmt.Printf("Recv RETRY (%v)\n", retry.Method)
-
-	//
-	// INIT2
-	//		
-	cid = retry.ConnectionId
-	token := retry.Token
-	init2 := NewInit2(cid, ct.id, token, &cphr)
-	if err := WriteAllUDP(conn, init2.Raw); err != nil {
-		log.Fatalf("Err send INIT2: %s\n", err)		
-	}
-	fmt.Println("Sent INIT2")
-
-	//
-	// INITACK
-	//
-	n, _, err = conn.ReadFromUDP(buf)
-	if err != nil {
-		log.Fatalf("Err recv INITACK: %s\n", err)
-	}
-
-	initAck, err := ParsePacket(buf[:n], &cphr)
-	key = initAck.Authenticate.Key
-	if err != nil {
-		log.Fatalf("Err parse INITACK: %s\n", err)
-	}
-	fmt.Printf("Recv INITACK (%v)\n", initAck.Method)
-
-	// INITDONE
-	ans := initAck.Authenticate.Challenge
-	initDone := NewInitDone(cid, ct.id, ans, &cphr)
-	if err := WriteAllUDP(conn, initDone.Raw); err != nil{
-		log.Fatalf("Err send INITDONE: %s\n", err)		
-	}
-	fmt.Println("Sent INITDONE")
-
-	return conn, cid, key
+	https.Run()
 }
 
-func clientSendUDP(
-	cid, id uint64, 
-	key []byte, 
-	conn *net.UDPConn, 
-	ch <-chan Frame,
-) {
-	cphr := xcrypto.NewXCipherFromBytes(key)
-
+func sendToServer(conn *net.UDPConn, sendCh <-chan Frame) {
 	for {
-		frame := <-ch
-		packet := NewTx(cid, id, frame, &cphr)
+		frame := <-sendCh
 
-		if err := WriteAllUDP(conn, packet.Raw); err != nil {
-			log.Fatalf("Err send packet (clientSendUDP): %s\n", err)
+		if err := WriteAllUDP(conn, frame.Raw); err != nil {
+			log.Printf("Err send to server: %s\n", err)
 			continue
 		}
 	}
 }
 
-func clientRecvUDP(
-	cid, id uint64, 
-	key []byte, 
-	conn *net.UDPConn, 
-	chs *ChannelMap[Frame],
-) {
-	cphr := xcrypto.NewXCipherFromBytes(key)
+func recvFromServer(conn *net.UDPConn, chMap *ChannelMap[Frame]) {
 	buf := make([]byte, 65535)
 
 	for {
 		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			log.Fatalf("Err recv packet (clientRecvUDP): %s\n", err)
+			log.Printf("Err recv from server: %s\n", err)
 			continue
 		}
 
-		packet, err := ParsePacket(buf[:n], &cphr)
+		frame, err := ParseFrame(buf[:n])
 		if err != nil {
-			log.Fatalf("Err parse packet (clientRecvUDP): %s\n", err)
+			log.Printf("Err parse recv frame from server: %s\n", err)
 			continue
 		}
 
-		frame := packet.Payload
-		ch, exists := chs.Get(frame.Destination)
+		sendCh, exists := chMap.Get(frame.Dst)
 		if !exists {
-			log.Printf("Err send frame (clientRecvUDP): dest not exists\n")
+			log.Printf(
+				"Err route frame from server: dst %v not exists\n",
+				frame.Dst,
+			)
 			continue
 		}
-		ch <- frame
+
+		sendCh <- frame
 	}
+}
+
+func delegate() {
+
+}
+
+func delegateSend() {
+
+}
+
+func delegateRecv() {
+
 }

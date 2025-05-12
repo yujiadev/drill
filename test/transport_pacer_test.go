@@ -69,11 +69,11 @@ func TestSendPacerPopFrameAndRecvAck(t *testing.T) {
             }
         }
 
-        // Generate a random permutation of acks
+        // Generate a random permutation of acks for the frames just popped
         for _, seq := range permutation {
             sentAcks = append(sentAcks, uint64(base)+uint64(seq))
         }
-        
+
         // Sync the generated acks with pacer
         for _, ack := range sentAcks {
             pacer.RecvAck(ack)
@@ -87,7 +87,7 @@ func TestSendPacerPopFrameAndRecvAck(t *testing.T) {
             )
         }
 
-
+        // Config for next round of testing, move parameter forward
         base = base + uint64(npop)
         npop = mrand.Intn(63) + 1  // avoid 0
         sentAcks = []uint64{}

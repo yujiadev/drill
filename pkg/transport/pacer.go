@@ -1,268 +1,159 @@
-package transport
+package transport 
 
 import (
-	//"container/heap"
-	"fmt"
+	"container/heap"
+//	"fmt"
 )
 
-//
-// SendPacer
-//
-type SendPacer struct {
-	buf []byte
-	waitAck uint64
-	acks []uint64
-	frames map[uint64]Frame
-	window uint64
-	pivot uint64
-	src uint64
-	dst uint64
+type SeqHeap []uint64
+
+func (h SeqHeap) Len() int { return len(h) }
+func (h SeqHeap) Less(i, j int) bool { return h[i] < h[j] }
+func (h SeqHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h *SeqHeap) Push(x any) {
+	*h = append(*h, x.(uint64))
 }
 
-func NewSendPacer(src, dst uint64) SendPacer {
-	buf := []byte{}	
-	waitAck := uint64(0)
-	acks := []uint64{}
+func (h *SeqHeap) Pop() any {
+	old := *h	
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
+type SendPacer struct {
+	WaitAck uint64	
+	acks    SeqHeap
+	frames  map[uint64]Frame
+	wnd     uint64
+	pvt     uint64
+	src     uint64
+	dst     uint64
+	buf		[]byte
+}
+
+func NewSendPacer(src, dst uint64, wnd uint64) SendPacer {
+	buf := []byte{}
+	acks := SeqHeap{}
 	frames := make(map[uint64]Frame)
-	window := uint64(64)
-	pivot := uint64(0)
 
 	return SendPacer {
-		buf,
-		waitAck,
+		0,
 		acks,
 		frames,
-		window,
-		pivot,
+		wnd,
+		0,
 		src,
 		dst,
+		buf,	
 	}
 }
 
-func (sp *SendPacer) GetBacklog() int {
-	return len(sp.acks)
-}
-
-// Push incoming data into pacer's buffer
 func (sp *SendPacer) PushBuffer(data []byte) {
 	sp.buf = append(sp.buf, data...)
 }
 
-func (sp *SendPacer) Report() {
-	fmt.Printf(
-		"l(%v) --- p(%v) --- u(%v) | wnd (%v) | b(%v) | bfl (%v)\n", 
-		sp.waitAck, 
-		sp.pivot, 
-		sp.waitAck+sp.window,
-		sp.window,
-		sp.acks,
-		len(sp.buf),
-	)
-}
-
-// Pop a frame for transmission
-func (sp *SendPacer) PopFrame() (Frame, bool){
-	// Return if out of window size or nothing can be popped
-	if sp.pivot > sp.waitAck + sp.window || len(sp.buf) == 0 {
-		sp.Report()
-
+func (sp *SendPacer) PopFrame() (Frame, bool) {
+	// Return if exceed windows size or not enough bytes to send
+	if sp.pvt > sp.WaitAck + sp.wnd || len(sp.buf) == 0 {
 		return Frame{}, false
 	}
 
-	
-	first1024 := sp.buf[:min(len(sp.buf), 1024)]
-	frame := NewFrame(FFWD, sp.pivot, sp.src, sp.dst, first1024)
+	payload := sp.buf[:min(len(sp.buf), 1024)]
+	frame := NewFwdFrame(sp.pvt, sp.src, sp.dst, payload)
 
-	sp.frames[sp.pivot] = frame
-	sp.pivot += 1
-	sp.buf = sp.buf[min(len(sp.buf), 1024):]
+	sp.frames[sp.pvt] = frame
+	sp.pvt += 1
+	sp.buf = sp.buf[min(len(sp.buf), 1024):]	
 
 	return frame, true
 }
 
-func (sp *SendPacer) RecvAck(ack uint64) {
-	// Non-exist ack, return
-	if _, ok := sp.frames[ack]; !ok {
+func (sp *SendPacer) RecvAck(recvAck uint64) {
+	if recvAck < sp.WaitAck {
 		return
 	}
-	delete(sp.frames, ack)
+	delete(sp.frames, recvAck)
 
-	sp.acks = append(sp.acks, ack)
-	heapifyUp(&sp.acks, len(sp.acks)-1)
+	heap.Push(&sp.acks, recvAck)
 
-	// Remove all the consective acks, start from waitAck
+	// Try to remove all the consecutive ACKs, start from waitAck 
 	for {
-		// The lower end of windows can move forward 
-		if sp.waitAck == sp.acks[0] {
-			sp.waitAck += 1
-
-			// Only one ack left, empty it then return
-			if len(sp.acks) == 1 {
-				sp.acks = []uint64{}
-				return
-			}
-
-			// Two acks left, pop the min one then recheck
-			if len(sp.acks) == 2 {
-				sp.acks = sp.acks[1:]
-				continue
-			}
-
-			// Three or more acks left, pop the min one, then heapify down
-			last := sp.acks[len(sp.acks)-1]
-			sp.acks[0] = last 
-			sp.acks = sp.acks[:len(sp.acks)-1]
-
-			heapifyDown(&sp.acks, 0)
+		if sp.WaitAck == sp.acks[0] {
+			sp.WaitAck += 1	
+			heap.Pop(&sp.acks)
 			continue
 		}
 
 		break
-	}	
-
-	return
+	}
 }
 
-//
-// RecvPacer
-//
+func (sp *SendPacer) GetBacklogSize() int {
+	return len(sp.acks)
+}
+
+func (sp *SendPacer) GetBufferSize() int {
+	return len(sp.buf)
+}
+
+func (sp *SendPacer) GetSelectiveRepeat() []Frame {
+	repeat := []Frame{}
+
+	for i := sp.WaitAck; i < sp.WaitAck + sp.wnd; i++ {
+		frame, ok := sp.frames[i]
+		if !ok {
+			continue
+		}
+
+		repeat = append(repeat, frame)
+	}
+
+	return repeat
+}
+
 type RecvPacer struct {
-	waitSeq uint64
-	seq []uint64				// Acknowledged sequences in a binary heap
-	frames map[uint64]Frame 	// Map that stored recv frames
+	WaitSeq uint64
+	seqs	SeqHeap
+	frames  map[uint64]Frame
 }
 
 func NewRecvPacer() RecvPacer {
-	waitSeq := uint64(0)
-	seq := []uint64{}
+	seqs := []uint64{}
 	frames := make(map[uint64]Frame)
 
 	return RecvPacer {
-		waitSeq,
-		seq,
+		0,
+		seqs,
 		frames,
 	}
 }
 
 func (rp *RecvPacer) PushFrame(frame Frame) {
-	// Sequence of recv frame is less than the one that is waiting for, return
-	if frame.Sequence < rp.waitSeq {
+	if frame.Seq < rp.WaitSeq {
 		return
 	}
 
-	if _, ok := rp.frames[frame.Sequence]; !ok {
-		// Store the frame for later usage
-		rp.frames[frame.Sequence] = frame
-
-		// Track the sequence of recv frame
-		rp.seq = append(rp.seq, frame.Sequence)
-
-		// Sort the heap
-		heapifyUp(&rp.seq, len(rp.seq)-1)
+	if _, ok := rp.frames[frame.Seq]; !ok {
+		rp.frames[frame.Seq] = frame
+		rp.seqs = append(rp.seqs, frame.Seq)
 		return
 	}
 }
 
 func (rp *RecvPacer) PopFrame() (Frame, bool) {
-	// Return nothing in case of empty sequence or wait sequence still pending
-	if len(rp.seq) == 0 || rp.waitSeq != rp.seq[0] {
+	if len(rp.seqs) == 0 || rp.WaitSeq != rp.seqs[0] {
 		return Frame{}, false
 	}
 
-	// Pop the sequence	
-	lastSeq := rp.seq[len(rp.seq)-1]
-	rp.seq[0] = lastSeq
-	rp.seq = rp.seq[:len(rp.seq)-1]
+	seq := rp.seqs[0]
+	heap.Pop(&rp.seqs)
+	frame := rp.frames[seq]
 
-	// Retrive the frame, then remove the frame from storage
-	frame, _ := rp.frames[rp.waitSeq]
-	delete(rp.frames, rp.waitSeq)
-
-	// Update current wait sequence to the next one
-	rp.waitSeq += 1
-
-	// Compare if there are at least two sequences in track
-	if len(rp.seq) >= 2 {
-		heapifyDown(&rp.seq, 0)
-	}
+	rp.WaitSeq += 1
+	delete(rp.frames, seq)
 
 	return frame, true
-}
-
-func heapifyUp(heap *[]uint64, index int) {
-	// Reach the root node, return
-	if index == 0 {
-		return 
-	}
-
-	parent := (index-1)/2
-	if (*heap)[parent] < (*heap)[index] {
-		return
-	}
-
-	swap(heap, parent, index)
-	heapifyUp(heap, parent)	
-}
-
-func heapifyDown(heap *[]uint64, parent int) {
-	if parent >= len(*heap) {
-		return
-	}
-
-	left  := 2*parent+1
-	right := 2*parent+2
-	bound := len(*heap)
-
-	// Current parent node has two children
-	if left < bound && right < bound {
-		// Left node the smallest
-		if (*heap)[left] < (*heap)[right] && (*heap)[left] < (*heap)[parent] {
-			swap(heap, left, parent)
-			heapifyDown(heap, left)
-			return
-		}
-
-		// Right node the smallest
-		if (*heap)[right] < (*heap)[left] && (*heap)[right] < (*heap)[parent] {
-			swap(heap, right, parent)
-			heapifyDown(heap, right)
-			return
-		}
-
-		// Parent node is the smallest (unlikely, but possible)
-		if (*heap)[parent] < (*heap)[left] && (*heap)[parent] < (*heap)[right] {
-			return
-		}
-	}
-
-	// Current parent node only has left node 
-	if left < bound && right >= bound {
-		// Left node the smallest
-		if (*heap)[left] < (*heap)[parent] {
-			swap(heap, left, parent)
-			heapifyDown(heap, left)
-			return
-		}
-
-		// Parent node is the smallest
-		return 
-	}
-
-	// Current parent node only has right node
-	if right < bound && left >= bound {
-		// Right node the smallest
-		if (*heap)[right] < (*heap)[parent] {
-			swap(heap, right, parent)
-			heapifyDown(heap, right)
-			return
-		}
-
-		return
-	}
-}
-
-func swap(heap *[]uint64, index1, index2 int) {
-	temp := (*heap)[index1]	
-	(*heap)[index1] = (*heap)[index2]
-	(*heap)[index2] = temp
 }
