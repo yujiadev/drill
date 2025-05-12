@@ -3,6 +3,7 @@ package transport
 import (
 	"log"
 	"net"
+	"sync"
 )
 
 type ClientTransport struct {
@@ -37,7 +38,7 @@ func (ct *ClientTransport) Run() {
 
 	go sendToServer(conn, sendCh)
 	go recvFromServer(conn, chMap)
-	go delegate() 
+	go delegate(delegateCh, sendCh, chMap) 
 
 	// Start the HTTPS proxy
 	https := NewHttpsProxy(
@@ -90,14 +91,54 @@ func recvFromServer(conn *net.UDPConn, chMap *ChannelMap[Frame]) {
 	}
 }
 
-func delegate() {
-
+func delegate(
+	delegateCh <-chan ConfirmedConn, 
+	sendCh chan<-Frame, 
+	chMap *ChannelMap[Frame],
+) {
+	for {
+		confirmed := <-delegateCh
+		go subDelegate(confirmed, sendCh)
+	}
 }
 
-func delegateSend() {
+func subDelegate(confirmed ConfirmedConn, sendCh chan<-Frame) {
+	var wg sync.WaitGroup
+	wg.Add(2)
 
+	go delegateSend(
+		confirmed.Conn, 
+		sendCh, 
+		confirmed.Src, 
+		confirmed.Dst,
+		&wg,
+	)
+
+	go delegateRecv(
+		confirmed.Conn, 
+		confirmed.RecvCh,
+		&wg,
+	)
+
+	wg.Wait()
 }
 
-func delegateRecv() {
+func delegateSend(
+	conn net.Conn, 
+	sendCh chan<-Frame, 
+	src, dst uint64,
+	wg *sync.WaitGroup,
+) {
 
+
+	wg.Done()
+}
+
+func delegateRecv(
+	conn net.Conn, 
+	recvCh <-chan Frame,
+	wg *sync.WaitGroup,
+) {
+
+	wg.Done()
 }
