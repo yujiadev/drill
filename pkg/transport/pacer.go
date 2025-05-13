@@ -81,6 +81,8 @@ func (sp *SendPacer) RecvAck(recvAck uint64) {
 
 	// Try to remove all the consecutive ACKs, start from waitAck 
 	for {
+		if len(sp.acks) == 0 { break }
+
 		if sp.WaitAck == sp.acks[0] {
 			sp.WaitAck += 1	
 			heap.Pop(&sp.acks)
@@ -99,14 +101,25 @@ func (sp *SendPacer) GetBufferSize() int {
 	return len(sp.buf)
 }
 
+func (sp* SendPacer) GetReadyFrames() []Frame {
+	frames := []Frame{}
+
+	for {
+		frame, ok := sp.PopFrame()
+		if !ok { break }
+
+		frames = append(frames, frame)
+	}
+
+	return frames
+}
+
 func (sp *SendPacer) GetSelectiveRepeat() []Frame {
 	repeat := []Frame{}
 
-	for i := sp.WaitAck; i < sp.WaitAck + sp.wnd; i++ {
+	for i := sp.WaitAck; i <= (sp.WaitAck+sp.wnd); i++ {
 		frame, ok := sp.frames[i]
-		if !ok {
-			continue
-		}
+		if !ok { continue }
 
 		repeat = append(repeat, frame)
 	}
@@ -132,28 +145,46 @@ func NewRecvPacer() RecvPacer {
 }
 
 func (rp *RecvPacer) PushFrame(frame Frame) {
+	/*
 	if frame.Seq < rp.WaitSeq {
 		return
 	}
+	*/
 
-	if _, ok := rp.frames[frame.Seq]; !ok {
+	_, exists := rp.frames[frame.Seq]
+
+	if !exists {
 		rp.frames[frame.Seq] = frame
-		rp.seqs = append(rp.seqs, frame.Seq)
+		heap.Push(&rp.seqs, frame.Seq)
 		return
 	}
+
+	panic("----------------------should not exist------------------------")
+
 }
 
 func (rp *RecvPacer) PopFrame() (Frame, bool) {
 	if len(rp.seqs) == 0 || rp.WaitSeq != rp.seqs[0] {
 		return Frame{}, false
 	}
-
-	seq := rp.seqs[0]
-	heap.Pop(&rp.seqs)
-	frame := rp.frames[seq]
-
 	rp.WaitSeq += 1
+
+	seq := (heap.Pop(&rp.seqs)).(uint64)
+	frame := rp.frames[seq]
 	delete(rp.frames, seq)
 
 	return frame, true
+}
+
+func (rp *RecvPacer) GetReadyFrames() []Frame {
+	frames := []Frame{}	
+
+	for {
+		frame, ok := rp.PopFrame()
+		if !ok { break }
+
+		frames = append(frames, frame)
+	}
+
+	return frames
 }

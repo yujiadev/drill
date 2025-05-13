@@ -6,11 +6,11 @@ import (
 	//"sync"
 
 	"drill/pkg/config"
-	"drill/pkg/transport"
+	txp "drill/pkg/transport"
 )
 
 func main() {
-	fmt.Println("Running as drill developing client and server")
+	fmt.Println("Running as drill developing server\n")
 
 	if len(os.Args) != 2 {
 		panic("Error: Missing config file path!\ndrill <path-to-config>\n")
@@ -19,7 +19,11 @@ func main() {
 	config_file_path := os.Args[1]	
 	cfg := config.ReadThenParseServerConfig(config_file_path)
 
-	fmt.Println(cfg)
+	serverTxp := txp.NewServerTransport(
+		cfg.Address,
+		cfg.Pkey,
+		cfg.Protocol,
+	)
 
-	transport.ParseFrame([]byte{})
+	serverTxp.Run()
 }

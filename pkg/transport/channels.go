@@ -6,28 +6,26 @@ import (
 )
 
 type ChannelMap[T any] struct {
-	mu sync.RWMutex
-	counter atomic.Uint64
-	endpoints map[uint64] chan T
+	mu        sync.RWMutex
+	counter   atomic.Uint64
+	endpoints map[uint64]chan T
 }
 
-func NewChannelMap[T any]() *ChannelMap[T]{
-	var counter atomic.Uint64
-	counter.Add(1)
-
-	return &ChannelMap[T]{ 
-		counter: counter,
+func NewChannelMap[T any]() *ChannelMap[T] {
+	cm := &ChannelMap[T]{
 		endpoints: make(map[uint64]chan T),
 	}
+	cm.counter.Store(1) // Initialize counter starting at 1
+	return cm
 }
 
-func (cm *ChannelMap[T]) Create() (chan T, uint64){	
+func (cm *ChannelMap[T]) Create() (chan T, uint64) {
 	ch := make(chan T, 65535)
 
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	id := uint64(cm.counter.Load())
+	id := cm.counter.Load()
 	cm.counter.Add(1)
 
 	cm.endpoints[id] = ch
@@ -35,10 +33,10 @@ func (cm *ChannelMap[T]) Create() (chan T, uint64){
 	return ch, id
 }
 
-func (cm *ChannelMap[T]) Get(cid uint64) (chan T, bool) {
-	cm.mu.RLock()
-	defer cm.mu.RUnlock()
-	ch, ok := cm.endpoints[cid]
+func (cm *ChannelMap[T]) Get(id uint64) (chan T, bool) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	ch, ok := cm.endpoints[id]
 	return ch, ok
 }
 
@@ -47,7 +45,7 @@ func (cm *ChannelMap[T]) Delete(id uint64) {
 	defer cm.mu.Unlock()
 
 	if ch, exist := cm.endpoints[id]; exist {
-		close(ch)	
+		close(ch)
 		delete(cm.endpoints, id)
 	}
 }

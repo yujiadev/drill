@@ -75,8 +75,14 @@ func ParseFrame(data []byte) (Frame, error) {
 		)
 	}
 
-	payload := data[37:37+payloadSize]
-	raw     := data[0:37+payloadSize]
+	payload := make([]byte, payloadSize)
+	copy(payload, data[37:37+payloadSize])
+
+	raw     := make([]byte, 37+payloadSize)
+	copy(raw, data[37:37+payloadSize])
+
+	//payload := data[37:37+payloadSize]
+	//raw     := data[:37+payloadSize]
 
 	return Frame{
 		method,
@@ -87,6 +93,24 @@ func ParseFrame(data []byte) (Frame, error) {
 		payload,
 		raw,
 	}, nil
+}
+
+func (f *Frame) Report() {
+	fmt.Printf(
+		"Frame Information:\n"+
+			"  Method:  0x%02x (%d)\n"+
+			"  Time:    %s (%d)\n"+
+			"  Seq:     %d\n"+
+			"  Src:     0x%016x (%d)\n"+
+			"  Dst:     0x%016x (%d)\n"+
+			"  Payload: %d bytes\n%v\n",
+		f.Method, f.Method,
+		time.Unix(0, f.Time).Format(time.RFC3339Nano), f.Time,
+		f.Seq,
+		f.Src, f.Src,
+		f.Dst, f.Dst,
+		len(f.Payload), f.Payload,
+	)
 }
 
 func NewConnFrame(src uint64, addr string) Frame {
@@ -101,8 +125,8 @@ func NewRfwdFrame(seq, src, dst uint64, payload []byte) Frame {
 	return NewFrame(FRFWD, seq, src, dst, payload)
 }
 
-func NewAckFrame(seq, src, dst uint64, payload []byte) Frame {
-	return NewFrame(FACK, seq, src, dst, payload)
+func NewAckFrame(seq, src, dst uint64) Frame {
+	return NewFrame(FACK, seq, src, dst, []byte("FACK"))
 }
 
 func NewSendDoneFrame(seq, src, dst uint64) Frame {

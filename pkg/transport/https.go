@@ -80,9 +80,9 @@ func handle(
 
 	connFrame := NewConnFrame(src, req.Host)
 	sendCh <- connFrame
-
 	respFrame := <-recvCh
 
+	// Remote server can't connect to target host, return
 	if respFrame.Method != FOK {
 		chMap.Delete(src)
 		log.Printf("Err HTTP CONNECT request: can't fulfill\n")
@@ -96,13 +96,14 @@ func handle(
 		return
     }
 
+    // Handle the subsequent tunneling
     confirmedConn := ConfirmedConn {
-    	src,
-    	respFrame.Dst,
-    	conn,
-    	recvCh,
-    	req.Host,
+    	src,			// Local ID
+    	respFrame.Src,	// Remote ID
+    	conn,			// TCP connection the client "browswer"
+    	recvCh,			
+    	req.Host,		
     }
 
-    delegateCh <- confirmedConn
+    delegateCh <- confirmedConn		// Let ClientTransport handle transfer
 }

@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	fmt.Println("Running as drill developing client and server")
+	fmt.Println("Running as drill developing client\n")
 
 	if len(os.Args) != 2 {
 		panic("Error: Missing config file path!\ndrill <path-to-config>\n")
