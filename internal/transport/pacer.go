@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"time"
 	"container/heap"
 )
 
@@ -66,7 +67,7 @@ func (sp *SendPacer) Pop() (Packet, bool) {
 	}
 
 	// payload is at most 1024 bytes
-	payload := sp.buf[:min(len(sp.buf), 512)]
+	payload := sp.buf[:min(len(sp.buf), 1024)]
 	packet := NewFwdPacket(sp.Cid, sp.Pvt, sp.Src, sp.Dst, payload)
 
 	// Track the frame
@@ -76,7 +77,7 @@ func (sp *SendPacer) Pop() (Packet, bool) {
 	sp.Pvt += 1
 
 	// Clean up buffer
-	sp.buf = sp.buf[min(len(sp.buf), 512):]
+	sp.buf = sp.buf[min(len(sp.buf), 1024):]
 
 	return packet, true
 }
@@ -134,6 +135,18 @@ func (sp *SendPacer) IsEmpty() bool {
 	}
 
 	return false
+}
+
+func (sp *SendPacer) Ready() []Packet {
+	pkts := []Packet{}
+	pkt, ok := sp.Pop()
+
+	for ok {
+		pkts = append(pkts, pkt)
+		pkt, ok = sp.Pop()
+	}
+
+	return pkts
 }
 
 func (sp *SendPacer) Repeat() []Packet {
@@ -219,4 +232,68 @@ func (rp *RecvPacer) Fetch() []byte {
 	}
 
 	return buf
+}
+
+
+//
+// Track the packet timeout
+//
+type PacketTimeout struct {
+	Created time.Time
+	Item 	Packet
+}
+
+func NewPacketTimeout(pkt Packet) PacketTimeout {
+	return PacketTimeout{
+		time.Now(),
+		pkt,
+	}
+}
+
+func Alert(
+	trackCh <-chan Packet, 
+	clearCh <-chan uint64,
+	notifyCh chan<-Packet,
+) {
+	queue := make([]PacketTimeout, 0, 1024)
+	status := make(map[uint64]bool)
+	duration := time.Hour
+
+	for {
+		// Calculate the if the Packet has timeout. 
+		// Each packet only have 300 ms waiting time.
+		if len(queue) > 0 {
+			elapse := time.Now().Sub(queue[0].Created)
+
+			if elapse > 300*time.Millisecond {
+				duration = 0*time.Millisecond
+			} else {
+				duration = 300*time.Millisecond - elapse
+			}
+		}
+
+		select {
+		case pkt := <-trackCh:
+			queue = append(queue, NewPacketTimeout(pkt))
+			status[pkt.Seq] = true
+
+			break
+		case seq := <-clearCh:
+			delete(status, seq)
+
+			break
+		case <-time.After(duration):
+			item := queue[0]
+			queue = queue[1:]
+			seq := item.Item.Seq
+
+			_, ok := status[seq]
+			if ok {
+				delete(status, seq)
+				notifyCh <- item.Item
+			} 
+
+			break
+		}
+	}
 }

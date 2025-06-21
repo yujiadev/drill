@@ -8,6 +8,54 @@ import (
 	"drill/pkg/netio"
 )
 
+func SendTask2(
+	wg *sync.WaitGroup, 
+	conn net.Conn, 
+	sendCh chan<-Packet, 
+	syncCh <-chan Packet,
+	cid, localId, remoteId uint64, 
+) {
+	connCh := make(chan[]byte, 65535)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go netio.TCPReadAsChannel(ctx, conn, connCh)	
+
+	pacer := NewSendPacer(cid, localId, remoteId)
+	//duration := 300*time.Millisecond
+
+	for {
+		select {
+		case data := <-connCh:
+			if len(data) == 0 {
+				sendCh<-pacer.Done()
+				wg.Done()
+				return 
+			}
+
+			pacer.Push(data)
+
+			for _, pkt := range pacer.Ready() {
+				sendCh<-pkt
+			}
+
+			break
+		case pkt := <-syncCh:
+			if pkt.Method == ACK {
+				pacer.Update(pkt.Seq)
+				break
+			}
+
+			if pkt.Method == RECVFIN {
+				wg.Done()
+				return
+			}
+
+			break
+		}
+	}
+}
+
 func SendTask(
 	wg *sync.WaitGroup, 
 	conn net.Conn, 

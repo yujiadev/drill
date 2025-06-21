@@ -163,7 +163,6 @@ func serverHandle(
 		ch, exists := endpoints.Get(pkt.Dst)
 
 		if !exists {
-			log.Println("Dst not found")
 			continue
 		}
 
