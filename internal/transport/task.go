@@ -19,10 +19,15 @@ func SendTask2(
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	trackCh  := make(chan Packet, 2048)
+	clearCh  := make(chan uint64, 2048)
+	notifyCh := make(chan Packet, 2048)
+	go Alert(trackCh, clearCh, notifyCh)
+
 	go netio.TCPReadAsChannel(ctx, conn, connCh)	
 
 	pacer := NewSendPacer(cid, localId, remoteId)
-	//duration := 300*time.Millisecond
+
 
 	for {
 		select {
@@ -37,12 +42,14 @@ func SendTask2(
 
 			for _, pkt := range pacer.Ready() {
 				sendCh<-pkt
+				trackCh<-pkt
 			}
 
 			break
 		case pkt := <-syncCh:
 			if pkt.Method == ACK {
 				pacer.Update(pkt.Seq)
+				clearCh <-pkt.Seq
 				break
 			}
 
@@ -51,6 +58,10 @@ func SendTask2(
 				return
 			}
 
+			break
+
+		case pkt := <-notifyCh:
+			sendCh<-pkt
 			break
 		}
 	}

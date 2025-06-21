@@ -290,7 +290,8 @@ func Alert(
 			_, ok := status[seq]
 			if ok {
 				delete(status, seq)
-				notifyCh <- item.Item
+				notifyCh <-item.Item
+				queue = append(queue, item)
 			} 
 
 			break
