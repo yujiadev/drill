@@ -66,7 +66,6 @@ func SendTask(
 				break
 			}
 		}
-
 	}
 }
 
@@ -81,7 +80,7 @@ func RecvTask(
 	pacer := NewRecvPacer()
 
 	for {
-		packet := <- recvCh 
+		packet := <-recvCh 
 
 		if packet.Method == ACK || packet.Method == RECVFIN {
 			syncCh <- packet
@@ -108,6 +107,5 @@ func RecvTask(
 			wg.Done()
 			return
 		}
-
 	}
 }
