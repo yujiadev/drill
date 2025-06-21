@@ -1,37 +1,32 @@
 package transport
 
-type SHOLD struct {
-
-}
-
-/*
-package transport
-
 import (
 	"log"
 	"fmt"
-	"net"
 	"time"
+	"net"
 	"sync"
-	"crypto/rand"
 	"drill/internal/obfuscate"
 	"drill/pkg/netio"
-	//"drill/pkg/xcrypto"
+	"drill/pkg/xcrypto"
 )
 
 type ServerTransport struct {
-	laddr *net.UDPAddr
-	pkey  []byte
-	wg    *sync.WaitGroup
+	laddr 		*net.UDPAddr
+	protocol 	string
+	pkey  		[]byte
+	wg    		*sync.WaitGroup
 }
 
 func NewServerTransport(
 	laddr *net.UDPAddr,
+	protocol string,
 	pkey []byte,
 	wg *sync.WaitGroup,
 ) ServerTransport {
 	return ServerTransport {
 		laddr,
+		protocol,
 		pkey,
 		wg,
 	}
@@ -71,7 +66,7 @@ func (st *ServerTransport) Run() {
 		if !exists && n >= 1200 {
 			pkey := make([]byte, 0, 32)
 			pkey = append(pkey, st.pkey...)
-			go serverHandle(conn, raddr, sessions, pkey, data)
+			go serverHandle(conn, raddr, sessions, st.protocol, pkey, data)
 			continue
 		}
 
@@ -89,36 +84,49 @@ func serverHandle(
 	conn *net.UDPConn,
 	raddr *net.UDPAddr,
 	sessions *Sessions,
+	protocol string,
 	pkey0 []byte,
-	initData []byte,
+	initBytes []byte,
 ) {
 	recvCh, cid := sessions.Create(raddr)
-	obfs := obfuscate.NewBasicObfuscator(pkey0)
+	sendCh := make(chan []byte, 65535)
 
-	if err := serverRetry(conn, recvCh, raddr, pkey0); err != nil {
+	go serverSocketSend(conn, raddr, sendCh)
+
+	if err := serverRetry(sendCh, recvCh, raddr, pkey0); err != nil {
 		log.Println(err)
-		return 
+		sessions.Delete(raddr)
+		return
 	}
 
-	pkey2 := make([]byte, 32)
-	rand.Read(pkey2)
+	pkey2 := xcrypto.RandomKey(32) 
+
 	if err := serverAuth(
-		conn, 
+		sendCh, 
 		recvCh, 
-		obfs, 
-		raddr, 
-		initData, 
-		cid, pkey2,
+		protocol, 
+		pkey0, 
+		pkey2, 
+		cid, 
+		initBytes,
 	); err != nil {
 		log.Println(err)
+		sessions.Delete(raddr)
 		return
 	}
 
 	//
-	// Recv subsequent packets
+	// Multiplexing and Forwarding
 	//
-	obfs.SetPkey(pkey2)
+	obfsCh := make(chan Packet, 65535)
+	go serverObfsSend(
+		obfsCh,
+		sendCh,
+		protocol,
+		pkey2,
+	)
 
+	obfs := obfuscate.BuildObfuscator(protocol, pkey2)
 	endpoints := NewEndpoints()
 
 	for {
@@ -136,57 +144,73 @@ func serverHandle(
 			continue
 		}
 
-		//
-		// Forward
-		//
-		if pkt.Method == FWD {
-			ch, exists := endpoints.Get(pkt.ConnId)
-
-			if !exists {
-				continue
-			}
-
-			select {
-			case ch <- pkt:
-				break
-			case <-time.After(20*time.Millisecond):
-				break
-			}
-			
-			continue
-		}
-
 		// 
 		// Connect
 		//
 		if pkt.Method == CONN {
-			recvCh, localId := endpoints.Create()
-			//obfs2 := obfuscate.NewBasicObfuscator(pkey2)
-			go serverConnTask(
-				conn, 
-				recvCh, 
-				raddr, 
+			ch, localId := endpoints.Create()
+			go serverConn(
+				obfsCh,
+				ch, 
 				endpoints, 
+				cid,
 				localId, 
-				pkey2, 
 				pkt,
 			)
+			continue
+		}
+
+		ch, exists := endpoints.Get(pkt.Dst)
+
+		if !exists {
+			log.Println("Dst not found")
+			continue
+		}
+
+		select {
+		case ch <- pkt:
+			break
+		case <-time.After(200*time.Millisecond):
+			break
+		}
+	}
+}
+
+func serverSocketSend(conn *net.UDPConn, raddr *net.UDPAddr, ch <-chan []byte) {
+	for {
+		data := <-ch
+		if err := netio.WriteUDPAddr(conn, raddr, data); err != nil {
 			continue
 		}
 	}
 }
 
+func serverObfsSend(
+	recvCh <-chan Packet,
+	sendCh chan<-[]byte, 
+	protocol string, 
+	pkey2 []byte,
+) {
+	obfs := obfuscate.BuildObfuscator(protocol, pkey2)
+
+	for {
+		pkt := <-recvCh
+
+		encoded := obfs.Encode(pkt.AsBytes())
+
+		sendCh <-encoded
+	}
+}
+
 func serverRetry(
-	conn *net.UDPConn, 
-	recvCh <-chan []byte,
-	raddr *net.UDPAddr, 
+	sendCh chan<-[]byte, 
+	recvCh <-chan []byte, 
+	raddr *net.UDPAddr,
 	pkey0 []byte,
 ) error {
 	token := NewRetryToken(raddr.IP, pkey0)
 
-	if err := netio.WriteUDPAddr(conn, raddr, token); err != nil {
-		return err
-	}
+	sendCh <- token
 
 	select {
 	case data :=<-recvCh:
@@ -202,20 +226,19 @@ func serverRetry(
 }
 
 func serverAuth(
-	conn *net.UDPConn, 
-	recvCh <-chan []byte,
-	obfs obfuscate.Obfuscate, 
-	raddr *net.UDPAddr, 
-	initData []byte,
-	cid uint64,
-	pkey2 []byte,
+	sendCh chan<-[]byte, 
+	recvCh <-chan []byte, 
+	protocol string, 
+	pkey0, pkey2 []byte, 
+	cid uint64, 
+	initBytes []byte,
 ) error {
-	pkey1 := make([]byte, 0, 32)
-
 	//
 	// Get the pkey1 from the INIT packet from client.
 	//
-	decoded, err := obfs.Decode(initData)
+	obfs := obfuscate.BuildObfuscator(protocol, pkey0)
+	pkey1 := make([]byte, 0, 32)
+	decoded, err := obfs.Decode(initBytes)
 	if err != nil {
 		return err 
 	}
@@ -228,19 +251,17 @@ func serverAuth(
 	pkey1 = append(pkey1, pkt.Payload[0:32]...)
 
 	//
-	// Build a obfuscated packet based on the pkey1.
-	// Send pkey2 to client
+	// Build a obfuscated packet (encrypted w/ pkey1)
+	// Send it to client
 	//
 	obfs.SetPkey(pkey1)
 
-	pkt2 := NewAuthPacket(cid, pkey2)
-	encoded := obfs.Encode(pkt2.AsBytes())
-	if err := netio.WriteUDPAddr(conn, raddr, encoded); err != nil {
-		return err
-	}
+	pkt = NewAuthPacket(cid, pkey2)
+	encoded := obfs.Encode(pkt.AsBytes()) 
+	sendCh <- encoded
 
 	//
-	// Recv a obfuscated packet that assoicated with pkey2
+	// Recv a obfuscated packet that encrypted with pkey2
 	//
 	obfs.SetPkey(pkey2)
 
@@ -259,24 +280,41 @@ func serverAuth(
 	return nil
 }
 
-func serverConnTask(
-	conn *net.UDPConn, 
-	recvCh chan Packet, 
-	raddr *net.UDPAddr, 
-	endpoints *Endpoints,
-	localId uint64, 
-	pkey2 []byte, 
+func serverConn(
+	sendCh chan<-Packet, 
+	recvCh <-chan Packet, 
+	endpoints *Endpoints, 
+	cid, localId uint64, 
 	connPkt Packet,
 ) {
-	log.Println(connPkt)
+	remoteId := connPkt.Src
+	host := string(connPkt.Payload)
+
+	conn, err := net.Dial("tcp", host)
+	if err != nil {
+		errPkt := NewErrPacket(cid)
+		errPkt.Dst = remoteId
+		sendCh <- errPkt
+		endpoints.Delete(localId)
+
+		log.Printf("Error connect to %s: %s\n", host, err)
+		return
+	}
+
+	okPkt := NewOkPacket(cid)
+	okPkt.Src = localId
+	okPkt.Dst = remoteId
+	sendCh <- okPkt
+
+	syncCh := make(chan Packet, 65535)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go SendTask(&wg, conn, sendCh, syncCh, cid, localId, remoteId)
+	go RecvTask(&wg, conn, sendCh, recvCh, syncCh, cid, localId, remoteId)
+	wg.Wait()
+
+	endpoints.Delete(localId)
+
+	return
 }
-
-func serverSendTask() {
-
-}
-
-func serverRecvTask() {
-
-}
-*/
-

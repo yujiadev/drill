@@ -1,37 +1,35 @@
 package transport
 
-type Hold struct {}
-
-/*
-package transport
-
 import (
 	"log"
 	"fmt"
 	"time"
 	"net"
 	"sync"
-	"crypto/rand"
 	"drill/internal/obfuscate"
 	"drill/pkg/netio"
+	"drill/pkg/xcrypto"
 )
 
 type ClientTransport struct {
-	laddr *net.TCPAddr
-	raddr *net.UDPAddr
-	pkey  []byte
-	wg    *sync.WaitGroup
+	laddr 		*net.TCPAddr
+	raddr 		*net.UDPAddr
+	protocol 	string
+	pkey  		[]byte
+	wg    	*sync.WaitGroup
 }
 
 func NewClientTransport(
 	laddr *net.TCPAddr,
 	raddr *net.UDPAddr,
+	protocol string,
 	pkey  []byte,
 	wg    *sync.WaitGroup,
 ) ClientTransport {
 	return ClientTransport {
 		laddr,
 		raddr,
+		protocol,
 		pkey,
 		wg,
 	}
@@ -48,47 +46,218 @@ func (ct *ClientTransport) Run() {
 
 	sendCh := make(chan []byte, 65535)
 	recvCh := make(chan []byte, 65535)
-	go clientSocketRecv(conn, recvCh, ct.raddr)
 
-	obfs := obfuscate.NewBasicObfuscator(ct.pkey)
-	pkey2, cid, err := clientHandshake(conn, recvCh, obfs)
+	go clientSocketSend(conn, sendCh)
+	go clientSocketRecv(conn, recvCh)
+
+	pkey2, cid, err := ct.clientHandshake(sendCh, recvCh)
 	if err != nil {
-		log.Printf("Error handshake. %s\n", err)
+		log.Printf("Error on handshake. %s\n", err)
 		ct.wg.Done()
+		return
 	}
 
-	go clientHttpsProxy(conn, ct.laddr, cid, pkey2)
+	obfsCh := make(chan Packet, 65535)
+	endpoints := NewEndpoints()
 
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go clientObfsSend(
+		obfsCh, 
+		sendCh,
+		ct.protocol, 
+		pkey2, 
+		cid,
+	)
+
+	go clientObfsRecv(
+		endpoints,
+		recvCh,
+		ct.protocol, 
+		pkey2, 
+		cid,
+	)
+
+	go clientHttpsProxy(
+		endpoints,
+		obfsCh,
+		ct.laddr, 
+		cid,
+	)
+
+	wg.Wait()
 }
 
-func clientSocketRecv(
-	conn *net.UDPConn, 
-	ch chan<-[]byte,
-	addr *net.UDPAddr,
-) {
-	buf := make([]byte, 65535)
+func clientSocketSend(conn *net.UDPConn, ch <-chan []byte) {
 	for {
-		n, raddr, err := conn.ReadFromUDP(buf)
+		select {
+		case data :=<-ch:
+			if err := netio.WriteUDP(conn, data); err != nil {
+				log.Printf("Error send data to socket. %s\n", err)
+				continue
+			}
+			break
+		case <-time.After(2000*time.Millisecond):
+			break
+		}
+	}
+}
+
+func clientSocketRecv(conn *net.UDPConn, ch chan<-[]byte) {
+	buf := make([]byte, 65535)
+
+	for {
+		n, _, err := conn.ReadFromUDP(buf)
 
 		if err != nil {
+			log.Printf("Error recv data from socket. %s\n", err)
 			continue
 		}
-
-		if !raddr.IP.Equal(addr.IP) || raddr.Port != addr.Port {
-			continue
-		}
-
+		
 		data := make([]byte, 0, n)
 		data = append(data, buf[:n]...)
 		ch <- data
 	}
 }
 
-func clientHttpsProxy(
-	conn *net.UDPConn,  
-	laddr *net.TCPAddr, 
+func (ct *ClientTransport) clientHandshake(
+	sendCh chan <-[]byte,
+	recvCh <-chan []byte,
+) ([]byte, uint64, error) {
+	pkey1 := ct.clientInit(sendCh)
+
+	if err := ct.clientRetry(sendCh, recvCh); err != nil {
+		return []byte{}, 0, err
+	}
+
+	pkey2, cid, err := ct.clientAuth(sendCh, recvCh, pkey1)
+	if err != nil {
+		return []byte{}, 0, err
+	}
+
+	return pkey2, cid, nil
+}
+
+func (ct *ClientTransport) clientInit(sendCh chan <- []byte) []byte {
+	pkey1 := xcrypto.RandomKey(32)
+	obfs := obfuscate.BuildObfuscator(ct.protocol, ct.pkey)
+
+	pkt := NewInitPacket(pkey1)
+	encoded := obfs.Encode(pkt.AsBytes())
+
+	sendCh <-encoded
+
+	return pkey1
+}
+
+func (ct *ClientTransport) clientRetry(
+	sendCh chan <-[]byte,
+	recvCh <-chan []byte,
+) error {
+	select {
+	case data :=<-recvCh:
+		sendCh <- data
+		return nil 
+	case <-time.After(2*time.Second):
+		return fmt.Errorf("timeout on receving retry token from server")
+	}	
+}
+
+func (ct *ClientTransport) clientAuth(
+	sendCh chan <-[]byte,
+	recvCh <-chan []byte,
+	pkey1 []byte,
+) ([]byte, uint64, error) {
+	//
+	// Recv AUTH packet from server, try to get the pkey2 from server
+	//
+	obfs := obfuscate.BuildObfuscator(ct.protocol, pkey1)
+
+	encoded := <-recvCh
+	decoded, err := obfs.Decode(encoded)
+	if err != nil {
+		log.Println(err)
+		return []byte{}, 0, err
+	}
+
+	pkt, err := ParsePacket(decoded)
+	if err != nil {
+		return []byte{}, 0, err
+	}
+
+	cid := pkt.ConnId
+	pkey2 := append([]byte{}, pkt.Payload[:32]...)
+
+	//
+	// Send a OK packet (encrypted with pkey2) to server as acknowledgement
+	//
+	obfs.SetPkey(pkey2)
+	pkt = NewOkPacket(cid)
+	encoded = obfs.Encode(pkt.AsBytes())
+	sendCh <- encoded
+
+	return pkey2, cid, nil
+}
+
+func clientObfsSend(
+	recvCh <-chan Packet,
+	sendCh chan<-[]byte, 
+	protocol string, 
+	pkey2 []byte, 
 	cid uint64,
-	pkey2 []byte,
+) {
+	obfs := obfuscate.BuildObfuscator(protocol, pkey2)
+
+	for {
+		pkt := <-recvCh
+
+		encoded := obfs.Encode(pkt.AsBytes())
+
+		sendCh <-encoded
+	}	
+}
+
+func clientObfsRecv(
+	endpoints *Endpoints,
+	recvCh <-chan []byte,
+	protocol string, 
+	pkey2 []byte, 
+	cid uint64,
+) {
+	obfs := obfuscate.BuildObfuscator(protocol, pkey2)
+
+	for {
+		encoded := <-recvCh
+	
+		decoded, err := obfs.Decode(encoded)
+		if err != nil {
+			log.Printf("Err on deobfuscating encoded data. %s\n", err)
+			continue
+		}
+
+		pkt, err := ParsePacket(decoded)
+		if err != nil {
+			log.Printf("Err on parsing the decoded data to a packet. %s\n", err)
+			continue
+		}
+
+		ch, exists := endpoints.Get(pkt.Dst)
+
+		if !exists {
+			log.Printf("Not found dst %v\n", pkt.Dst)
+			continue
+		}
+
+		ch <-pkt
+	}
+}
+
+func clientHttpsProxy(
+	endpoints *Endpoints,
+	obfsCh chan<-Packet,
+	laddr *net.TCPAddr,
+	cid uint64, 
 ) {
 	ln, err := net.ListenTCP("tcp", laddr)	
 	if err != nil {
@@ -102,118 +271,54 @@ func clientHttpsProxy(
 			continue
 		}
 
-		go clientHandle(conn)
+		go clientHandle(endpoints, obfsCh, conn, cid)
 	}
 }
 
-func clientHandle(conn net.Conn) {
+func clientHandle(
+	endpoints *Endpoints,
+	obfsCh chan<-Packet,
+	conn net.Conn, 
+	cid uint64,
+) {
 	host, err := ParseHTTPConnectHost(conn)
 	if err != nil {
 		log.Printf("Err parse HTTP CONNECT host: %s\n", host)
 		return
 	}
 
-	log.Println(host)
-}
+	recvCh, localId := endpoints.Create()
+	connPkt := NewConnPacket(cid, host)
+	connPkt.Src = localId
 
-func clientSend() {
+	obfsCh <- connPkt
+	recvPkt := <-recvCh
 
-}
-
-func clientRecv() {
-
-}
-
-func clientHandshake(
-	conn *net.UDPConn,  
-	ch <-chan []byte,
-	obfs obfuscate.Obfuscate,
-) ([]byte, uint64, error) {
-	pkey1 := make([]byte, 32)
-	rand.Read(pkey1)
-
-	if err := clientInit(conn, obfs, pkey1); err != nil {
-		return []byte{}, 0, err
-	}
-
-	if err := clientRetry(conn, ch); err != nil {
-		return []byte{}, 0, err
-	}
-
-	pkey2, cid, err := clientAuth(conn, ch, obfs, pkey1)
-	if err != nil {
-		return []byte{}, 0, err
-	}
-
-	return pkey2, cid, nil
-}
-
-func clientInit(
-	conn *net.UDPConn, 
-	obfs obfuscate.Obfuscate, 
-	pkey1 []byte,
-) error {
-	pkt := NewInitPacket(pkey1)
-	encoded := obfs.Encode(pkt.AsBytes())
-
-	if err := netio.WriteUDP(conn, encoded); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func clientRetry(conn *net.UDPConn, recvCh <-chan []byte) error {
-	select {
-	case data :=<-recvCh:
-		if err := netio.WriteUDP(conn, data); err != nil {
-			return err
+	if recvPkt.Method != OK {
+		if err := NotifyClientOnFailure(conn); err != nil {
+			log.Printf("Err notify client on faiure: %s\n", err)	
 		}
+		endpoints.Delete(localId)
 
-		return nil
-	case <-time.After(2*time.Second):
-		return fmt.Errorf("timeout on receving retry token from server")
+		return
 	}
+
+	if err := NotifyClientOnSuccess(conn); err != nil {
+		log.Printf("Err notify client on success: %s\n", err)	
+		endpoints.Delete(localId)
+		return
+	}
+
+	remoteId := recvPkt.Src
+	syncCh := make(chan Packet, 65535)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go SendTask(&wg, conn, obfsCh, syncCh, cid, localId, remoteId)
+	go RecvTask(&wg, conn, obfsCh, recvCh, syncCh, cid, localId, remoteId)
+	wg.Wait()
+
+	endpoints.Delete(localId)
+
+	return
 }
-
-func clientAuth(
-	conn *net.UDPConn, 
-	recvCh <-chan []byte,
-	obfs obfuscate.Obfuscate, 
-	pkey1 []byte,
-) ([]byte, uint64, error) {
-	//
-	// Recv AUTH packet from server, try to get the pkey2 from server
-	//
-	obfs.SetPkey(pkey1)
-	pkey2 := make([]byte, 0, 32)
-	var cid uint64
-
-	encoded := <-recvCh
-	decoded, err := obfs.Decode(encoded)
-	if err != nil {
-		return pkey2, cid, err
-	}
-
-	pkt, err := ParsePacket(decoded)
-	if err != nil {
-		return pkey2, cid, err
-	}
-
-	cid = pkt.ConnId
-	pkey2 = append(pkey2, pkt.Payload[:32]...)
-
-	// Send a OK packet to server with pkey2
-	obfs.SetPkey(pkey2)
-
-	pkt2 := NewAuthPacket(cid, pkey2)
-	encoded = obfs.Encode(pkt2.AsBytes())
-	if err := netio.WriteUDP(conn, encoded); err != nil {
-		return pkey2, cid, err
-	}
-
-	return pkey2, cid, nil
-}
-*/
-
-
