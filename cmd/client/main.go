@@ -1,30 +1,27 @@
 package main
 
 import (
-	"os"
-	"fmt"
+	"log"
+	"sync"
 
-	"drill/pkg/config"
-	txp "drill/pkg/transport"
+	"drill/internal/config"
+	"drill/internal/transport"
 )
 
 func main() {
-	fmt.Println("Running as drill developing client\n")
+	log.Println("Client started")
+	cfg := config.LoadClientYaml("configs/client.yaml")
+	var wg sync.WaitGroup
 
-	if len(os.Args) != 2 {
-		panic("Error: Missing config file path!\ndrill <path-to-config>\n")
-	}
-
-	config_file_path := os.Args[1]	
-	cfg := config.ReadThenParseClientConfig(config_file_path)
-
-
-	clientTxp := txp.NewClientTransport(
-		cfg.Client.Address,
-		cfg.Server.Address,
-		cfg.Server.Pkey,
-		cfg.Server.Protocol,
+	client := transport.NewClientTransport(
+		cfg.LocalAddr,
+		cfg.RemoteAddr,
+		cfg.RemoteProtocol,
+		cfg.RemotePkey,
+		&wg,
 	)
 
-	clientTxp.Run()
+	wg.Add(1)
+	go client.Run()
+	wg.Wait()
 }

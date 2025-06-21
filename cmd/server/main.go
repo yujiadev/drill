@@ -1,29 +1,27 @@
 package main
 
 import (
-	"os"
-	"fmt"
-	//"sync"
+	"log"
+	"sync"
 
-	"drill/pkg/config"
-	txp "drill/pkg/transport"
+	"drill/internal/config"
+	"drill/internal/transport"
 )
 
 func main() {
-	fmt.Println("Running as drill developing server\n")
+	log.Println("Server started")
+	cfg := config.LoadServerYaml("configs/server.yaml")
 
-	if len(os.Args) != 2 {
-		panic("Error: Missing config file path!\ndrill <path-to-config>\n")
-	}
+	var wg sync.WaitGroup
 
-	config_file_path := os.Args[1]	
-	cfg := config.ReadThenParseServerConfig(config_file_path)
-
-	serverTxp := txp.NewServerTransport(
-		cfg.Address,
-		cfg.Pkey,
+	server := transport.NewServerTransport(
+		cfg.Addr,
 		cfg.Protocol,
+		cfg.Pkey,
+		&wg,
 	)
 
-	serverTxp.Run()
+	wg.Add(1)
+	go server.Run()
+	wg.Wait()
 }
