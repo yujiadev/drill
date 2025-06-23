@@ -314,7 +314,8 @@ func clientHandle(
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go SendTask(&wg, conn, obfsCh, syncCh, cid, localId, remoteId)
+	//go SendTask(&wg, conn, obfsCh, syncCh, cid, localId, remoteId)
+	go SendTask2(&wg, conn, obfsCh, syncCh, cid, localId, remoteId)
 	go RecvTask(&wg, conn, obfsCh, recvCh, syncCh, cid, localId, remoteId)
 	wg.Wait()
 
