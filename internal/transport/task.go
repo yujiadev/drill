@@ -28,7 +28,6 @@ func SendTask2(
 
 	pacer := NewSendPacer(cid, localId, remoteId)
 
-
 	for {
 		select {
 		case data := <-connCh:
@@ -59,7 +58,6 @@ func SendTask2(
 			}
 
 			break
-
 		case pkt := <-notifyCh:
 			sendCh<-pkt
 			break

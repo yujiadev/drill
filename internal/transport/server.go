@@ -309,7 +309,9 @@ func serverConn(
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go SendTask(&wg, conn, sendCh, syncCh, cid, localId, remoteId)
+	//go SendTask(&wg, conn, sendCh, syncCh, cid, localId, remoteId)
+	go SendTask2(&wg, conn, sendCh, syncCh, cid, localId, remoteId)
+
 	go RecvTask(&wg, conn, sendCh, recvCh, syncCh, cid, localId, remoteId)
 	wg.Wait()
 

@@ -234,19 +234,18 @@ func (rp *RecvPacer) Fetch() []byte {
 	return buf
 }
 
-
 //
 // Track the packet timeout
 //
 type PacketTimeout struct {
 	Created time.Time
-	Item 	Packet
+	Seq	    uint64
 }
 
-func NewPacketTimeout(pkt Packet) PacketTimeout {
+func NewPacketTimeout(seq uint64) PacketTimeout {
 	return PacketTimeout{
 		time.Now(),
-		pkt,
+		seq,
 	}
 }
 
@@ -255,13 +254,11 @@ func Alert(
 	clearCh <-chan uint64,
 	notifyCh chan<-Packet,
 ) {
-	queue := make([]PacketTimeout, 0, 1024)
-	status := make(map[uint64]bool)
-	duration := time.Hour
+	queue := make([]PacketTimeout, 0, 1024)	
+	packets := make(map[uint64]Packet)	
+	duration := 3600*time.Hour
 
 	for {
-		// Calculate the if the Packet has timeout. 
-		// Each packet only have 300 ms waiting time.
 		if len(queue) > 0 {
 			elapse := time.Now().Sub(queue[0].Created)
 
@@ -270,30 +267,27 @@ func Alert(
 			} else {
 				duration = 300*time.Millisecond - elapse
 			}
+		} else {
+			duration = 3600*time.Hour
 		}
 
 		select {
 		case pkt := <-trackCh:
-			queue = append(queue, NewPacketTimeout(pkt))
-			status[pkt.Seq] = true
-
+			queue = append(queue, NewPacketTimeout(pkt.Seq))
+			packets[pkt.Seq] = pkt
 			break
 		case seq := <-clearCh:
-			delete(status, seq)
-
+			delete(packets, seq)
 			break
 		case <-time.After(duration):
-			item := queue[0]
+			seq := queue[0].Seq
 			queue = queue[1:]
-			seq := item.Item.Seq
 
-			_, ok := status[seq]
+			pkt, ok := packets[seq]
 			if ok {
-				delete(status, seq)
-				notifyCh <-item.Item
-				queue = append(queue, item)
+				notifyCh<-pkt
+				queue = append(queue, NewPacketTimeout(seq))
 			} 
-
 			break
 		}
 	}
